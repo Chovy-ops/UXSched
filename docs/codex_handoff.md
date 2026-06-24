@@ -164,7 +164,9 @@ claimed.
 * large-bubble consolidation:
   * BLOCKED, not implemented.
 * CUTLASS workload:
-  * BLOCKED, not implemented.
+  * NOT TESTED, not implemented.
+  * Design/audit plan added in `docs/cutlass_realtime_benchmark_plan.md`.
+  * CUTLASS correctness is mandatory before any P99 performance claim.
 
 ## Known gaps and risks
 
@@ -192,7 +194,9 @@ claimed.
 
 ## Current blocker
 
-Blocker type: Gate 1 correctness and synchronization evidence is incomplete.
+Blocker type: old open_resnet correctness and synchronization evidence is
+incomplete, but HB_FIXED runtime split execution is verified and correctness is
+deferred to CUTLASS workload validation.
 
 Latest manual result directory:
 
@@ -215,16 +219,21 @@ Observed latest manual GPU result:
   internal counters.
 * Existing ordinary open_resnet_like UXSched cases did not emit checksum,
   output hash, or output element count and returned 139 in that artifact set.
+* Current decision: do not block CUTLASS planning on the old
+  open_resnet_like correctness runner; CUTLASS must provide its own correctness
+  and synchronization validation.
 
 ## Next task
 
-The next gated task is a manual GPU rerun of the updated Gate 1 runner in the
-normal WSL terminal. The required result is `gate1_summary.env` with
-`gate1_pass=1`.
+The next gated task is CUTLASS Phase 1 implementation: add the minimal CUTLASS
+GEMM workload with deterministic inputs, CPU reference, error metrics, output
+hash, and single-process correctness output. Do not run or claim P99 until
+CUTLASS correctness and split evidence pass.
 
 Do not start the complete Hummingbird runtime, coordinator, profiler,
-kernel-tick, bubble detection, consolidation, or CUTLASS workload until Gate 1
-passes.
+kernel-tick, bubble detection, or consolidation. Do not claim CUTLASS P99
+results until CUTLASS correctness passes and LP transformed child launches are
+observed.
 
 ## Exact commands
 
@@ -420,7 +429,8 @@ this handoff file. Do not claim numeric performance until repeat runs exist.
 
 ## Do not do next
 
-Do not begin any of the following until Gate 1 passes:
+Do not begin any of the following until CUTLASS Phase 1-4 correctness and sync
+gates pass:
 
 * per-device Hummingbird runtime coordinator;
 * Hummingbird runtime state machine;
@@ -429,10 +439,34 @@ Do not begin any of the following until Gate 1 passes:
 * small-bubble detection or explicit bubble hint API;
 * large-bubble detection;
 * split-kernel consolidation;
-* CUTLASS ResNet-like workload;
 * performance claims or repeat=3 benchmark summaries.
 
+CUTLASS Phase 1 implementation is now allowed, but only as a correctness-first
+GEMM workload. Do not download CUTLASS automatically; use a user-provided
+`CUTLASS_ROOT` or a separately approved submodule step.
+
 ## Latest session update
+
+2026-06-24 CUTLASS realtime benchmark audit/design:
+
+* Audited `benchmarks/realtime_inference_latency.py` and its direct xserver,
+  xcli, process, environment, logging, CSV/JSON, and percentile paths.
+* Confirmed current HP workload is PyTorch/TorchVision ResNet50 inference and
+  current LP workload is PyTorch/TorchVision MobileNetV2 training.
+* Confirmed HP and LP are independent child processes, both create explicit
+  PyTorch CUDA streams, and the current HP request loop is back-to-back rather
+  than fixed-period.
+* Confirmed existing script uses priorities `1` and `0`; CUTLASS design switches
+  to HP `10` and LP `-10`.
+* Confirmed no CUTLASS source/submodule is present locally; CUDA toolkit and
+  `nvcc 12.0` are present.
+* Confirmed Hummingbird has optional local CUTLASS include detection but no
+  downloaded CUTLASS dependency.
+* Added `docs/cutlass_realtime_benchmark_plan.md`.
+* Old open_resnet correctness remains deferred; CUTLASS correctness is the new
+  mandatory correctness gate before any P99 claim.
+* No implementation, download, scheduler change, GPU benchmark, or performance
+  claim was made in this session.
 
 2026-06-24 Gate 1 correctness/synchronization runner update:
 

@@ -31,9 +31,10 @@ Allowed status values in this file:
 | small bubble hints | BLOCKED | Not implemented. |
 | large bubble / consolidation | BLOCKED | Not implemented. |
 | GPU visibility | RUNTIME VERIFIED | User manual WSL Gate 1 run used RTX 5060 and recorded `cuda_available=true`; do not reuse earlier Codex tool-session GPU blocker as current status. |
-| open_resnet_like GPU validation | FAILED | Native and UXSched split launch evidence exists, but prior non-correctness UXSched open_resnet_like cases returned 139 and did not provide checksum/hash evidence. Gate 1 now requires correctness-mode rerun. |
+| open_resnet_like GPU validation | FAILED | Native and UXSched split launch evidence exists, but prior non-correctness UXSched open_resnet_like cases returned 139 and did not provide checksum/hash evidence. Old open_resnet correctness is deferred and is not a blocker for CUTLASS planning. |
 | CUDA stream to XQueue association fix | RUNTIME VERIFIED | Default-stream and explicit-stream Driver API probes both reached `HB_SPLIT` with transformed child launches and `NO_XQUEUE=0` in `results/hb_gate1_after_xqueue_fix_20260624_170107`. |
-| CUTLASS workload | BLOCKED | Must wait until Gate 8. |
+| CUTLASS realtime benchmark plan | IMPLEMENTED | `docs/cutlass_realtime_benchmark_plan.md` audits the current realtime benchmark and defines the CUTLASS replacement plan. |
+| CUTLASS workload | NOT TESTED | Not implemented yet. CUTLASS correctness is mandatory before any P99 claim. |
 | Persistent agent rules | IMPLEMENTED | Added `AGENTS.md` with UXSched-Hummingbird integration rules. |
 | Gate 1 smoke runner | IMPLEMENTED | `tools/run_hb_gate1_smoke.sh` now records correctness, sync, HP passthrough, fallback artifacts, and writes `gate1_summary.env`; GPU rerun is required. |
 
@@ -94,6 +95,8 @@ Allowed status values in this file:
   `uxsched_hb_fixed_correctness`), five HB_FIXED synchronization probes, HP
   passthrough, separate `PTX_UNAVAILABLE` and `KERNEL_NOT_VERIFIED` fallback
   probes, and a final `gate1_summary.env`.
+- Added `docs/cutlass_realtime_benchmark_plan.md` with the CUTLASS realtime
+  benchmark audit and implementation plan.
 - Built `xserver` and `xcli` in both `build-hb` and `build-native`.
 
 ## Partially Completed
@@ -106,9 +109,9 @@ Allowed status values in this file:
 - Multi-dimensional grid splitting is implemented, but runtime validation has
   not been run on real GPU workloads yet.
 - `cuLaunchKernelEx` remains native in stage 1.
-- Manual Gate 1 remains FAILED until the user reruns the updated runner and
-  observes checksum/output-hash/element-count equality plus all synchronization
-  pass fields in `gate1_summary.env`.
+- Manual Gate 1 remains incomplete for old open_resnet correctness, but
+  HB_FIXED runtime is verified and correctness is deferred to the CUTLASS
+  workload validation path.
 
 ## Not Completed
 
@@ -121,10 +124,11 @@ Allowed status values in this file:
 - CUDA Graph splitting.
 - HB split combined with UXSched Lv2/Lv3.
 - cuBLAS/cuDNN closed kernel splitting.
-- CUTLASS ResNet-like workload implementation and validation.
+- CUTLASS realtime GEMM workload implementation and validation.
 - GPU runtime benchmark repeat runs.
-- Per-device runtime coordinator, profiler, kernel-tick, bubble detection,
-  consolidation, and CUTLASS remain intentionally unimplemented.
+- Per-device runtime coordinator, profiler, kernel-tick, bubble detection, and
+  consolidation remain intentionally unimplemented.
+- CUTLASS workload is planned but not implemented.
 
 ## Modified Files
 
@@ -226,6 +230,35 @@ Allowed status values in this file:
 - Added summary fields required for Gate 1, including checksum/hash/count
   comparison and synchronization pass flags.
 - Codex did not run GPU validation; manual WSL rerun is still required.
+
+2026-06-24 CUTLASS realtime benchmark audit/design:
+
+- Added `docs/cutlass_realtime_benchmark_plan.md`.
+- Audited `benchmarks/realtime_inference_latency.py`:
+  - HP is PyTorch/TorchVision ResNet50 inference;
+  - LP is PyTorch/TorchVision MobileNetV2 training;
+  - HP and LP are independent child processes;
+  - current HP requests are back-to-back after warmup, not fixed-period;
+  - current latency samples use CPU wall time around `step()` plus stream
+    synchronization, not CUDA events;
+  - current percentile calculation sorts samples and linearly interpolates.
+- Audited local CUTLASS availability:
+  - no CUTLASS source or submodule was found locally;
+  - CUDA toolkit and `nvcc 12.0` are present;
+  - Hummingbird has optional CUTLASS include detection but no bundled CUTLASS.
+- Decided to defer old open_resnet correctness runner repair and make CUTLASS
+  workload correctness mandatory before any P99 claim.
+- Designed a conservative first CUTLASS workload:
+  - deterministic GEMM inputs;
+  - CPU reference;
+  - max absolute and relative error;
+  - NaN/Inf detection;
+  - output hash and element count;
+  - CUDA event timing plus CPU request latency;
+  - HP priority `10`, LP priority `-10`;
+  - UXSched Native vs HB_FIXED fair comparison.
+- No CUTLASS download, implementation, scheduler change, GPU benchmark, or P99
+  performance claim was made.
 
 2026-06-24 handoff refresh:
 
