@@ -3,3 +3,7 @@ add_shim_lib(rtx4060
     SOFTLINKS_LINUX libcuda.so.1 libcuda.so
     TARGET_NAME_WINDOWS "nvcuda"
 )
+if(UXSCHED_ENABLE_HB_SPLIT)
+    target_compile_definitions(halrtx4060 PRIVATE UXSCHED_ENABLE_HB_SPLIT=1)
+    target_compile_definitions(shimrtx4060 PRIVATE UXSCHED_ENABLE_HB_SPLIT=1)
+endif()

@@ -1,0 +1,124 @@
+# HB Split Backend Integration Status
+
+## Completed
+
+- Created Git branch `feature/hummingbird-split-backend`.
+- Added `UXSCHED_ENABLE_HB_SPLIT` CMake option, default `OFF`.
+- Added runtime backend mode selection:
+  - `UXSCHED_CUDA_PREEMPT_BACKEND=NATIVE`
+  - `UXSCHED_CUDA_PREEMPT_BACKEND=HB_SPLIT`
+  - `UXSCHED_CUDA_PREEMPT_BACKEND=AUTO`
+- Kept UXSched CUDA shim as the only CUDA hook entry.
+- Routed module load/get/unload wrappers through UXSched HB-aware code:
+  - `cuModuleLoad`
+  - `cuModuleLoadData`
+  - `cuModuleLoadDataEx`
+  - `cuModuleGetFunction`
+  - `cuModuleUnload`
+- Added PTX offset transformation for verified kernels:
+  - append `__hb_off_x/y/z`;
+  - rewrite recognized `%ctaid.x/y/z` moves;
+  - reject recognized grid-level sync tokens.
+- Added hidden transformed module cache while keeping the application-visible
+  module/function original for safe native fallback.
+- Added fixed-size grid decomposition with default split size `512`.
+- Added LP-only split selection based on negative queue priority environment.
+- Added HP passthrough for non-negative priority.
+- Added native fallback for missing PTX, unverified kernels, transform failure,
+  missing XQueue, unsupported Lv2/Lv3 combination, unsupported axes, `extra`
+  launch format, null `kernelParams`, and grids smaller than split size.
+- Added `SplitCommandGroup` child completion tracking.
+- Added per-XQueue LP split launch config `threshold=1, batch_size=1`.
+- Added structured `[UXSCHED-HB]` logs.
+- Built `halcuda` and `shimcuda` with HB enabled.
+- Built `halcuda` and `shimcuda` with default HB disabled.
+
+## Partially Completed
+
+- Completion group tracks all child command completion, but first CUDA launch
+  error recovery is limited by current Lv1 `CudaQueueLv1` behavior, which asserts
+  on failed CUDA launches.
+- Module unload waits for all XQueues before unloading the hidden transformed
+  module, but broader multi-threaded unload stress tests are still needed.
+- Multi-dimensional grid splitting is implemented, but runtime validation has
+  not been run on real GPU workloads yet.
+- `cuLaunchKernelEx` remains native in stage 1.
+
+## Not Completed
+
+- Automatic split-size selection.
+- Online kernel profiling.
+- Bubble detection.
+- Split-kernel consolidation.
+- Kernel-tick scheduling.
+- Hummingbird memory management or NVLink offload.
+- CUDA Graph splitting.
+- HB split combined with UXSched Lv2/Lv3.
+- cuBLAS/cuDNN closed kernel splitting.
+- CUTLASS ResNet-like workload implementation and validation.
+- GPU runtime benchmark repeat runs.
+
+## Modified Files
+
+- `CMakeLists.txt`
+- `platforms/cuda/CMakeLists.txt`
+- `platforms/RTX4060/CMakeLists.txt`
+- `platforms/cuda/shim/include/xsched/cuda/shim/shim.h`
+- `platforms/cuda/shim/src/intercept.cpp`
+- `platforms/cuda/shim/src/shim.cpp`
+
+## Added Files
+
+- `platforms/cuda/hal/include/xsched/cuda/hal/hb_split/backend.h`
+- `platforms/cuda/hal/src/hb_split/backend.cpp`
+- `docs/hummingbird_backend_design.md`
+- `docs/hummingbird_backend_implementation.md`
+- `docs/hummingbird_backend_test_plan.md`
+- `docs/hummingbird_backend_results.md`
+- `hb_integration_status.md`
+
+## Build Results
+
+Passed:
+
+```bash
+cmake -S . -B build-hb -DPLATFORM_CUDA=ON -DUXSCHED_ENABLE_HB_SPLIT=ON -DBUILD_TEST=OFF -DCMAKE_INSTALL_INCLUDEDIR=include
+cmake --build build-hb --target halcuda shimcuda -j2
+```
+
+Passed:
+
+```bash
+cmake -S . -B build-native -DPLATFORM_CUDA=ON -DBUILD_TEST=OFF -DCMAKE_INSTALL_INCLUDEDIR=include
+cmake --build build-native --target halcuda shimcuda -j2
+```
+
+## Test Results
+
+Compile tests passed. GPU runtime tests and benchmarks were not run in this
+development pass.
+
+## Fallback Behavior
+
+`STRICT=0` returns to the original UXSched native launch path whenever splitting
+is unsupported. The original module and original `CUfunction` remain available
+because transformed code is loaded into a hidden module.
+
+## Known Risks
+
+1. The PTX transformer only rewrites recognized `mov.u32 ..., %ctaid.*`
+   patterns. Kernels compiled into different PTX forms will fall back native.
+2. Runtime cannot prove block independence or non-persistence; verified kernel
+   names are required before splitting.
+3. `extra` launch format is not split because current command ownership for
+   `extra_` is raw-pointer based.
+
+## Interface Reserved for Future Work
+
+- split-size policy can be added before `DecomposeGrid`;
+- kernel-tick can be modeled as LaunchWorker pacing after split commands exist;
+- bubble detection/consolidation can be added above backend selection without
+  adding a second scheduler;
+- CUTLASS support requires separate PTX transformability and correctness
+  validation.
+
