@@ -20,12 +20,15 @@ describing them as complete conflicts with code and must be treated as stale.
 
 * Repository: `/home/zm/project/UXSched`
 * Current branch: `feature/hummingbird-split-backend`
-* HEAD commit: `f1a9c8628d69e8270bbddae9a9221f7f386aa98d` at the time this handoff source audit was run
+* HEAD commit at the start of the 2026-06-24 Gate 1 attempt:
+  `f605e8d refresh Codex handoff status`
 * Baseline commit: `4146c1e add CUDA Hummingbird split backend`
-* Working tree status: clean except untracked build directories
+* Working tree status: clean except untracked build and result directories after
+  committing this documentation/test-runner update
 * Untracked files:
   * `build-hb/`
   * `build-native/`
+  * `results/`
 
 ## Relevant commits
 
@@ -46,6 +49,8 @@ Chronological order:
     environment.
 * `f1a9c86 document UXSched Hummingbird agent rules`
   * Added `AGENTS.md`, created this handoff file, and updated status rules.
+* `f605e8d refresh Codex handoff status`
+  * Refreshed the handoff before the current Gate 1 attempt.
 
 ## Implemented and verified
 
@@ -65,6 +70,7 @@ Chronological order:
 | Fixed grid decomposition | yes | yes | no | no | no |
 | `SplitCommandGroup` child tracking | yes | yes | no | no | no |
 | Per-XQueue threshold change to `1,1` | yes | yes | no | no | no |
+| Gate 1 smoke runner | yes | yes | blocked | no | no |
 | GPU runtime benchmarks | no | no | no | no | no |
 
 Compilation success is not runtime verification. No performance numbers are
@@ -121,6 +127,12 @@ claimed.
 * fallback:
   * COMPILE VERIFIED, NOT TESTED on GPU.
   * Sources: `TryLaunchKernelFixed`, `SubmitKernelWithRuntimeStrategy`.
+* Gate 1 smoke runner:
+  * IMPLEMENTED as `tools/run_hb_gate1_smoke.sh`.
+  * Saves per-case `command.txt`, `env.txt`, stdout/stderr, JSONL, return code,
+    checksum extraction, split trace extraction, transformed launch evidence,
+    child completion evidence, parent completion evidence, and xserver logs.
+  * Latest run was blocked before real CUDA kernel execution.
 * profiler:
   * BLOCKED, not implemented.
 * kernel-tick:
@@ -158,19 +170,30 @@ claimed.
 
 ## Current blocker
 
-Blocker type: GPU device access.
+Blocker type: GPU device access in the current Codex tool session.
 
-Exact observed error:
+Exact observed errors from this session:
 
 ```text
+ls -l /dev/dxg
+ls: cannot access '/dev/dxg': No such file or directory
+
 nvidia-smi
 Failed to initialize NVML: GPU access blocked by the operating system
 Failed to properly shut down NVML: GPU access blocked by the operating system
+
+python -c 'import torch; print(torch.cuda.is_available(), torch.cuda.device_count())'
+False 0
 ```
 
-Because GPU access is blocked, Gate 1 cannot be executed. There is no evidence
-yet for RUNTIME VERIFIED, CORRECTNESS VERIFIED, GLOBAL SCHEDULING VERIFIED, or
-PERFORMANCE VERIFIED status.
+Because GPU access is blocked inside this tool session, Gate 1 cannot reach
+real kernel execution. There is no evidence yet for RUNTIME VERIFIED,
+CORRECTNESS VERIFIED, GLOBAL SCHEDULING VERIFIED, or PERFORMANCE VERIFIED
+status.
+
+The user reported that the external WSL terminal had GPU access before Codex was
+started. That state was not visible inside this Codex tool session; this entry
+records a fresh check, not a reused previous conclusion.
 
 ## Next task
 
@@ -206,6 +229,28 @@ build-hb: Built target halcuda; Built target shimcuda
 build-native: Built target halcuda; Built target shimcuda
 ```
 
+Additional service targets built for Global Lv1 smoke preparation:
+
+```bash
+cmake --build build-hb --target xserver xcli -j2
+cmake --build build-native --target xserver xcli -j2
+```
+
+Confirmed paths:
+
+```text
+/home/zm/project/UXSched/build-hb/platforms/cuda/libhalcuda.so
+/home/zm/project/UXSched/build-hb/platforms/cuda/libshimcuda.so
+/home/zm/project/UXSched/build-native/platforms/cuda/libhalcuda.so
+/home/zm/project/UXSched/build-native/platforms/cuda/libshimcuda.so
+/home/zm/project/UXSched/build-hb/service/xserver
+/home/zm/project/UXSched/build-hb/service/xcli
+/home/zm/project/UXSched/build-native/service/xserver
+/home/zm/project/UXSched/build-native/service/xcli
+/home/zm/project/hummingbird/build-lite/benchmarks/hb_open_resnet_like_eval
+/home/zm/project/hummingbird/build-lite/benchmarks/hb_open_resnet_like_runtime_eval
+```
+
 GPU access check:
 
 ```bash
@@ -237,6 +282,35 @@ export UXSCHED_HB_VERIFIED_KERNELS=hb_open_resnet_conv2d_kernel,hb_open_resnet_r
 Then run the existing PTX-visible open-resnet-like driver workload from
 Hummingbird without modifying the Hummingbird repository. Use the user's known
 script/workload entrypoint for the local environment.
+
+Reusable smoke wrapper added in this session:
+
+```bash
+cd /home/zm/project/UXSched
+bash tools/run_hb_gate1_smoke.sh --output-dir results/hb_gate1_<timestamp>
+```
+
+Latest artifact directory:
+
+```text
+results/hb_gate1_20260624_162217
+```
+
+Latest artifact status:
+
+```text
+native_open_resnet_like_lp: BLOCKED reason=CUDA_UNAVAILABLE
+uxsched_native_lp: BLOCKED reason=CUDA_UNAVAILABLE
+uxsched_hb_fixed_lp: BLOCKED reason=CUDA_UNAVAILABLE
+uxsched_hb_fixed_hp_passthrough: BLOCKED reason=CUDA_UNAVAILABLE
+uxsched_hb_fixed_fallback_unverified: BLOCKED reason=CUDA_UNAVAILABLE
+sync_event_boundary_probe: BLOCKED reason=CUDA_UNAVAILABLE
+xserver: started with HPF, accepted clients, then stopped
+```
+
+No checksum, split trace, transformed launch evidence, or child completion was
+observed because each workload wrote a JSONL marker with
+`"cuda_available":false` before any kernel launch.
 
 ## Expected outputs
 

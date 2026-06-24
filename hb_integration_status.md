@@ -30,10 +30,11 @@ Allowed status values in this file:
 | kernel-tick launcher | BLOCKED | Not implemented. |
 | small bubble hints | BLOCKED | Not implemented. |
 | large bubble / consolidation | BLOCKED | Not implemented. |
-| GPU visibility | BLOCKED | `nvidia-smi` reports GPU access blocked by the operating system. |
-| open_resnet_like GPU validation | BLOCKED | Gate 1 cannot run until GPU access is available. |
+| GPU visibility | BLOCKED | Fresh 2026-06-24 Codex tool-session check: `/dev/dxg` missing, `nvidia-smi` reports GPU access blocked, `torch.cuda.is_available()` is `False`. |
+| open_resnet_like GPU validation | BLOCKED | Gate 1 smoke attempted; every workload wrote `"cuda_available":false` before kernel launch. |
 | CUTLASS workload | BLOCKED | Must wait until Gate 8. |
 | Persistent agent rules | IMPLEMENTED | Added `AGENTS.md` with UXSched-Hummingbird integration rules. |
+| Gate 1 smoke runner | IMPLEMENTED | `tools/run_hb_gate1_smoke.sh` records per-case artifacts and xserver logs. |
 
 ## Completed
 
@@ -75,6 +76,8 @@ Allowed status values in this file:
 - Added structured `[UXSCHED-HB]` logs.
 - Built `halcuda` and `shimcuda` with HB enabled.
 - Built `halcuda` and `shimcuda` with default HB disabled.
+- Added `tools/run_hb_gate1_smoke.sh` to preserve Gate 1 smoke artifacts.
+- Built `xserver` and `xcli` in both `build-hb` and `build-native`.
 
 ## Partially Completed
 
@@ -132,6 +135,7 @@ Allowed status values in this file:
 - `docs/codex_handoff.md`
 - `AGENTS.md`
 - `hb_integration_status.md`
+- `tools/run_hb_gate1_smoke.sh`
 
 ## Session Handoff
 
@@ -146,6 +150,45 @@ Allowed status values in this file:
   `halcuda shimcuda`.
 - GPU access remains BLOCKED with `nvidia-smi`: `GPU access blocked by the
   operating system`.
+
+2026-06-24 Gate 1 attempt:
+
+- Rechecked the current Codex tool-session environment instead of reusing the
+  previous blocker:
+  - `/dev/dxg` is not visible.
+  - `/usr/lib/wsl/lib/libcuda.so.1` exists.
+  - `nvidia-smi` reports GPU access blocked by the operating system.
+  - `torch.cuda.is_available()` is `False`; `torch.cuda.device_count()` is `0`.
+- Rebuilt:
+  - `cmake --build build-hb --target halcuda shimcuda -j2`
+  - `cmake --build build-native --target halcuda shimcuda -j2`
+  - `cmake --build build-hb --target xserver xcli -j2`
+  - `cmake --build build-native --target xserver xcli -j2`
+- Confirmed paths:
+  - `build-hb/platforms/cuda/libhalcuda.so`
+  - `build-hb/platforms/cuda/libshimcuda.so`
+  - `build-native/platforms/cuda/libhalcuda.so`
+  - `build-native/platforms/cuda/libshimcuda.so`
+  - `build-hb/service/xserver`
+  - `build-hb/service/xcli`
+  - `build-native/service/xserver`
+  - `build-native/service/xcli`
+  - `/home/zm/project/hummingbird/build-lite/benchmarks/hb_open_resnet_like_eval`
+  - `/home/zm/project/hummingbird/build-lite/benchmarks/hb_open_resnet_like_runtime_eval`
+- Added and ran `tools/run_hb_gate1_smoke.sh`.
+- Final artifact directory: `results/hb_gate1_20260624_162217`.
+- Artifact results:
+  - Native open_resnet_like: BLOCKED, `cuda_available=false`.
+  - UXSched `NATIVE`: BLOCKED, `cuda_available=false`.
+  - UXSched `HB_FIXED`: BLOCKED, `cuda_available=false`.
+  - HP passthrough probe: BLOCKED, `cuda_available=false`.
+  - fallback probe: BLOCKED, `cuda_available=false`.
+  - event-boundary probe: BLOCKED, `cuda_available=false`.
+  - xserver started with HPF, accepted UXSched clients, and stopped.
+- No checksum, split trace, transformed CUfunction launch evidence, or child
+  completion evidence was observed because no CUDA kernel was launched.
+- Global Lv1 HPF smoke was not run because single-process GPU execution did not
+  pass.
 
 2026-06-24:
 
@@ -170,15 +213,40 @@ cmake -S . -B build-native -DPLATFORM_CUDA=ON -DBUILD_TEST=OFF -DCMAKE_INSTALL_I
 cmake --build build-native --target halcuda shimcuda -j2
 ```
 
+Passed:
+
+```bash
+cmake --build build-hb --target xserver xcli -j2
+cmake --build build-native --target xserver xcli -j2
+```
+
 ## Test Results
 
-Compile tests passed. GPU runtime tests and benchmarks were not run in this
-development pass. GPU access is currently blocked by the operating system:
+Compile tests passed. Gate 1 smoke was attempted, but real GPU execution was
+blocked in the current Codex tool session. The final artifact directory is:
+
+```text
+results/hb_gate1_20260624_162217
+```
+
+Every smoke case recorded `cuda_available=false` in its JSONL output, so none of
+the Gate 1 runtime verification conditions were satisfied. GPU access is
+currently blocked by the operating system:
 
 ```text
 nvidia-smi
 Failed to initialize NVML: GPU access blocked by the operating system
 Failed to properly shut down NVML: GPU access blocked by the operating system
+```
+
+Additional current-session checks:
+
+```text
+ls -l /dev/dxg
+ls: cannot access '/dev/dxg': No such file or directory
+
+torch.cuda.is_available() = False
+torch.cuda.device_count() = 0
 ```
 
 ## Fallback Behavior

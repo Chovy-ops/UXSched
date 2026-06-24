@@ -61,10 +61,72 @@ Built target halcuda
 Built target shimcuda
 ```
 
+### Service targets for Global Lv1 smoke
+
+Command:
+
+```bash
+cmake --build build-hb --target xserver xcli -j2
+cmake --build build-native --target xserver xcli -j2
+```
+
+Result:
+
+```text
+Built target xserver
+Built target xcli
+```
+
+Confirmed paths:
+
+```text
+build-hb/platforms/cuda/libhalcuda.so
+build-hb/platforms/cuda/libshimcuda.so
+build-native/platforms/cuda/libhalcuda.so
+build-native/platforms/cuda/libshimcuda.so
+build-hb/service/xserver
+build-hb/service/xcli
+build-native/service/xserver
+build-native/service/xcli
+/home/zm/project/hummingbird/build-lite/benchmarks/hb_open_resnet_like_eval
+/home/zm/project/hummingbird/build-lite/benchmarks/hb_open_resnet_like_runtime_eval
+```
+
 ## 2. Runtime Results
 
-GPU runtime tests were not run in this development pass. No benchmark numbers
-are claimed in this document.
+2026-06-24 Gate 1 smoke was attempted with:
+
+```bash
+bash tools/run_hb_gate1_smoke.sh --output-dir results/hb_gate1_20260624_162217
+```
+
+The current Codex tool session did not have GPU access. Fresh checks showed
+`/dev/dxg` was not visible, `nvidia-smi` reported GPU access blocked by the
+operating system, and `torch.cuda.is_available()` returned `False`.
+
+Artifact status:
+
+| Case | Result |
+| --- | --- |
+| Native open_resnet_like LP | BLOCKED: `cuda_available=false` |
+| UXSched `NATIVE` LP | BLOCKED: `cuda_available=false` |
+| UXSched `HB_FIXED` LP | BLOCKED: `cuda_available=false` |
+| UXSched `HB_FIXED` HP passthrough probe | BLOCKED: `cuda_available=false` |
+| UXSched `HB_FIXED` unverified-kernel fallback probe | BLOCKED: `cuda_available=false` |
+| Event-boundary sync probe | BLOCKED: `cuda_available=false` |
+| xserver HPF | Started, accepted clients, stopped |
+
+No benchmark numbers are claimed in this document.
+
+Observed evidence:
+
+- checksum: not observed;
+- split trace: not observed;
+- transformed CUfunction launch evidence: not observed;
+- child completion evidence: not observed;
+- parent completion: no-CUDA marker only;
+- Global Lv1 HPF smoke: not run because single-process GPU execution did not
+  pass.
 
 Pending runtime checks:
 
@@ -91,4 +153,3 @@ Pending runtime checks:
 - `UXSCHED_ENABLE_HB_SPLIT` defaults to `OFF`.
 - The backend compiles in both enabled and disabled builds.
 - No Hummingbird source files were modified.
-
