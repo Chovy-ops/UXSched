@@ -27,6 +27,9 @@ Allowed status values:
 
 Gate 1 requires HB_FIXED GPU correctness and checksum success.
 
+Current environment status: BLOCKED. `nvidia-smi` reports GPU access blocked by
+the operating system, so Gate 1 cannot be executed in this session.
+
 ## Stage B: HP/LP Runtime Smoke
 
 | Test | Status |
@@ -89,4 +92,3 @@ Comparisons:
 - UXSched HB_FIXED;
 - UXSched HB_RUNTIME;
 - original Hummingbird.
-

@@ -14,7 +14,8 @@ The default build produced a clock-skew warning once, but `halcuda` and
 
 | Result | Status |
 | --- | --- |
-| HB_FIXED GPU run | NOT TESTED |
+| GPU visibility | BLOCKED |
+| HB_FIXED GPU run | BLOCKED |
 | HP passthrough GPU run | NOT TESTED |
 | LP split checksum | NOT TESTED |
 | synchronization correctness | NOT TESTED |
@@ -26,6 +27,17 @@ The default build produced a clock-skew warning once, but `halcuda` and
 
 No HP latency, LP throughput, or preemption-delay performance claims are made
 from this branch yet.
+
+GPU access check:
+
+```text
+nvidia-smi
+Failed to initialize NVML: GPU access blocked by the operating system
+Failed to properly shut down NVML: GPU access blocked by the operating system
+```
+
+Because Gate 1 requires real HB_FIXED GPU execution and checksum correctness,
+later runtime stages remain blocked in this environment.
 
 ## Required Metrics for Future Runs
 
@@ -46,4 +58,3 @@ from this branch yet.
 - transform overhead;
 - profiling overhead;
 - checksum/error.
-

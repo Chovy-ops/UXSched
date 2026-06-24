@@ -30,7 +30,8 @@ Allowed status values in this file:
 | kernel-tick launcher | BLOCKED | Not implemented. |
 | small bubble hints | BLOCKED | Not implemented. |
 | large bubble / consolidation | BLOCKED | Not implemented. |
-| open_resnet_like GPU validation | NOT TESTED | Gate 1 not passed. |
+| GPU visibility | BLOCKED | `nvidia-smi` reports GPU access blocked by the operating system. |
+| open_resnet_like GPU validation | BLOCKED | Gate 1 cannot run until GPU access is available. |
 | CUTLASS workload | BLOCKED | Must wait until Gate 8. |
 
 ## Completed
@@ -147,7 +148,13 @@ cmake --build build-native --target halcuda shimcuda -j2
 ## Test Results
 
 Compile tests passed. GPU runtime tests and benchmarks were not run in this
-development pass.
+development pass. GPU access is currently blocked by the operating system:
+
+```text
+nvidia-smi
+Failed to initialize NVML: GPU access blocked by the operating system
+Failed to properly shut down NVML: GPU access blocked by the operating system
+```
 
 ## Fallback Behavior
 
