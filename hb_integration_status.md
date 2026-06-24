@@ -135,6 +135,18 @@ Allowed status values in this file:
 
 ## Session Handoff
 
+2026-06-24 handoff refresh:
+
+- Rebuilt `docs/codex_handoff.md` using the required fixed structure.
+- Rechecked current Git and source state before writing the handoff.
+- Current source truth: `HB_RUNTIME` and `AUTO` are explicit Native fallback
+  paths in `platforms/cuda/hal/src/runtime/runtime_strategy.cpp`.
+- Current next gated task remains Gate 1 GPU validation of `HB_FIXED`.
+- Build checks passed for `build-hb` and `build-native` targets
+  `halcuda shimcuda`.
+- GPU access remains BLOCKED with `nvidia-smi`: `GPU access blocked by the
+  operating system`.
+
 2026-06-24:
 
 - Added `AGENTS.md` with permanent UXSched-Hummingbird integration rules.
