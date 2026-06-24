@@ -76,28 +76,13 @@ CUresult XLaunchKernel(CUfunction f,
 
     if (stream == nullptr) {
         WaitBlockingXQueues();
-        CUresult hb_ret = CUDA_SUCCESS;
-        if (hb_split::TryLaunchKernel(f, gdx, gdy, gdz, bdx, bdy, bdz, shmem,
-                                      stream, params, extra, nullptr, &hb_ret)) {
-            return hb_ret;
-        }
-        auto kernel = std::make_shared<CudaKernelLaunchCommand>(
-            f, gdx, gdy, gdz, bdx, bdy, bdz, shmem, params, extra, false);
-        return DirectLaunch(kernel, stream);
     }
 
-    auto xq = HwQueueManager::GetXQueue(GetHwQueueHandle(stream));
-    CUresult hb_ret = CUDA_SUCCESS;
-    if (hb_split::TryLaunchKernel(f, gdx, gdy, gdz, bdx, bdy, bdz, shmem,
-                                  stream, params, extra, xq, &hb_ret)) {
-        return hb_ret;
-    }
-    auto kernel = std::make_shared<CudaKernelLaunchCommand>(
-        f, gdx, gdy, gdz, bdx, bdy, bdz, shmem, params, extra, xq != nullptr);
-
-    if (xq == nullptr) return DirectLaunch(kernel, stream);
-    xq->Submit(kernel);
-    return CUDA_SUCCESS;
+    auto xq = stream == nullptr ? nullptr : HwQueueManager::GetXQueue(GetHwQueueHandle(stream));
+    runtime::KernelLaunch launch{
+        f, gdx, gdy, gdz, bdx, bdy, bdz, shmem, stream, params, extra, xq
+    };
+    return runtime::SubmitKernelWithRuntimeStrategy(launch).result;
 }
 
 CUresult XLaunchKernelEx(const CUlaunchConfig *config, CUfunction f, void **params, void **extra)

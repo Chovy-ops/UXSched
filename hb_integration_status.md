@@ -1,4 +1,37 @@
-# HB Split Backend Integration Status
+# HB Runtime Integration Status
+
+Allowed status values in this file:
+
+- IMPLEMENTED
+- COMPILE VERIFIED
+- RUNTIME VERIFIED
+- CORRECTNESS VERIFIED
+- PERFORMANCE VERIFIED
+- NOT TESTED
+- BLOCKED
+- FAILED
+
+## Current Runtime Strategy Status
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| Branch `feature/hummingbird-split-backend` | IMPLEMENTED | Continuing from `4146c1e`. |
+| Re-audit document | IMPLEMENTED | `docs/hummingbird_runtime_reaudit.md`. |
+| `CudaRuntimeStrategy` interface | COMPILE VERIFIED | Added under CUDA HAL runtime directory. |
+| `NativeRuntimeStrategy` | COMPILE VERIFIED | Preserves original `CudaKernelLaunchCommand` path. |
+| `HummingbirdRuntimeStrategy` | COMPILE VERIFIED | `HB_FIXED` delegates to fixed split implementation. |
+| `UXSCHED_CUDA_RUNTIME_STRATEGY=NATIVE` | COMPILE VERIFIED | Runtime tests not run. |
+| `UXSCHED_CUDA_RUNTIME_STRATEGY=HB_FIXED` | COMPILE VERIFIED | Runtime tests not run. |
+| `UXSCHED_CUDA_RUNTIME_STRATEGY=HB_RUNTIME` | IMPLEMENTED | Explicit Native fallback: runtime not implemented yet. |
+| `UXSCHED_CUDA_RUNTIME_STRATEGY=AUTO` | IMPLEMENTED | Explicit Native fallback: coordinator unavailable. |
+| Per-device HB coordinator | BLOCKED | Not implemented. |
+| HB state machine | BLOCKED | Not implemented. |
+| Kernel profiler / SplitPlan cache | BLOCKED | Not implemented. |
+| kernel-tick launcher | BLOCKED | Not implemented. |
+| small bubble hints | BLOCKED | Not implemented. |
+| large bubble / consolidation | BLOCKED | Not implemented. |
+| open_resnet_like GPU validation | NOT TESTED | Gate 1 not passed. |
+| CUTLASS workload | BLOCKED | Must wait until Gate 8. |
 
 ## Completed
 
@@ -8,6 +41,13 @@
   - `UXSCHED_CUDA_PREEMPT_BACKEND=NATIVE`
   - `UXSCHED_CUDA_PREEMPT_BACKEND=HB_SPLIT`
   - `UXSCHED_CUDA_PREEMPT_BACKEND=AUTO`
+- Added runtime strategy mode selection:
+  - `UXSCHED_CUDA_RUNTIME_STRATEGY=NATIVE`
+  - `UXSCHED_CUDA_RUNTIME_STRATEGY=HB_FIXED`
+  - `UXSCHED_CUDA_RUNTIME_STRATEGY=HB_RUNTIME`
+  - `UXSCHED_CUDA_RUNTIME_STRATEGY=AUTO`
+- Added `CudaRuntimeStrategy`, `NativeRuntimeStrategy`, and
+  `HummingbirdRuntimeStrategy`.
 - Kept UXSched CUDA shim as the only CUDA hook entry.
 - Routed module load/get/unload wrappers through UXSched HB-aware code:
   - `cuModuleLoad`
@@ -66,15 +106,26 @@
 - `platforms/cuda/shim/include/xsched/cuda/shim/shim.h`
 - `platforms/cuda/shim/src/intercept.cpp`
 - `platforms/cuda/shim/src/shim.cpp`
+- `platforms/cuda/hal/include/xsched/cuda/hal/hb_split/backend.h`
+- `platforms/cuda/hal/src/hb_split/backend.cpp`
 
 ## Added Files
 
 - `platforms/cuda/hal/include/xsched/cuda/hal/hb_split/backend.h`
 - `platforms/cuda/hal/src/hb_split/backend.cpp`
+- `platforms/cuda/hal/include/xsched/cuda/hal/runtime/runtime_strategy.h`
+- `platforms/cuda/hal/src/runtime/runtime_strategy.cpp`
 - `docs/hummingbird_backend_design.md`
 - `docs/hummingbird_backend_implementation.md`
 - `docs/hummingbird_backend_test_plan.md`
 - `docs/hummingbird_backend_results.md`
+- `docs/hummingbird_runtime_reaudit.md`
+- `docs/hummingbird_runtime_architecture.md`
+- `docs/hummingbird_runtime_state_machine.md`
+- `docs/hummingbird_runtime_profiler.md`
+- `docs/hummingbird_runtime_bubble_detection.md`
+- `docs/hummingbird_runtime_test_plan.md`
+- `docs/hummingbird_runtime_results.md`
 - `hb_integration_status.md`
 
 ## Build Results
@@ -121,4 +172,3 @@ because transformed code is loaded into a hidden module.
   adding a second scheduler;
 - CUTLASS support requires separate PTX transformability and correctness
   validation.
-

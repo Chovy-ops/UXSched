@@ -50,4 +50,10 @@ bool TryLaunchKernel(CUfunction function,
                      unsigned int shared_mem_bytes, CUstream stream, void **kernel_params,
                      void **extra, std::shared_ptr<preempt::XQueue> xqueue, CUresult *result);
 
+bool TryLaunchKernelFixed(CUfunction function,
+                          unsigned int grid_dim_x, unsigned int grid_dim_y, unsigned int grid_dim_z,
+                          unsigned int block_dim_x, unsigned int block_dim_y, unsigned int block_dim_z,
+                          unsigned int shared_mem_bytes, CUstream stream, void **kernel_params,
+                          void **extra, std::shared_ptr<preempt::XQueue> xqueue, CUresult *result);
+
 } // namespace xsched::cuda::hb_split

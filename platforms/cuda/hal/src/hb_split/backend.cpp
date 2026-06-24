@@ -129,13 +129,16 @@ bool BuildEnabled()
 
 BackendMode BackendModeFromEnv()
 {
-    const char *env = std::getenv("UXSCHED_CUDA_PREEMPT_BACKEND");
+    const char *env = std::getenv("UXSCHED_CUDA_RUNTIME_STRATEGY");
+    if (env == nullptr || env[0] == '\0') env = std::getenv("UXSCHED_CUDA_PREEMPT_BACKEND");
     if (env == nullptr || env[0] == '\0' || strcasecmp(env, "NATIVE") == 0) {
         return BackendMode::kNative;
     }
     if (strcasecmp(env, "HB_SPLIT") == 0) return BackendMode::kHbSplit;
+    if (strcasecmp(env, "HB_FIXED") == 0) return BackendMode::kHbSplit;
+    if (strcasecmp(env, "HB_RUNTIME") == 0) return BackendMode::kHbSplit;
     if (strcasecmp(env, "AUTO") == 0) return BackendMode::kAuto;
-    XWARN("[UXSCHED-HB] invalid UXSCHED_CUDA_PREEMPT_BACKEND=%s; using NATIVE", env);
+    XWARN("[UXSCHED-HB] invalid CUDA runtime strategy=%s; using NATIVE", env);
     return BackendMode::kNative;
 }
 
@@ -882,22 +885,19 @@ CUresult XModuleGetFunction(CUfunction *function, CUmodule module, const char *n
     return ret;
 }
 
-bool TryLaunchKernel(CUfunction function,
-                     unsigned int grid_dim_x, unsigned int grid_dim_y, unsigned int grid_dim_z,
-                     unsigned int block_dim_x, unsigned int block_dim_y, unsigned int block_dim_z,
-                     unsigned int shared_mem_bytes, CUstream stream, void **kernel_params,
-                     void **extra, std::shared_ptr<preempt::XQueue> xqueue, CUresult *result)
+bool TryLaunchKernelFixed(CUfunction function,
+                          unsigned int grid_dim_x, unsigned int grid_dim_y, unsigned int grid_dim_z,
+                          unsigned int block_dim_x, unsigned int block_dim_y, unsigned int block_dim_z,
+                          unsigned int shared_mem_bytes, CUstream stream, void **kernel_params,
+                          void **extra, std::shared_ptr<preempt::XQueue> xqueue, CUresult *result)
 {
     LogConfigOnce();
     if (result != nullptr) *result = CUDA_SUCCESS;
     if (!BuildEnabled()) return false;
 
-    const BackendMode mode = BackendModeFromEnv();
-    if (mode == BackendMode::kNative) return false;
-
     if (!Lv1Compatible()) {
         LogFallback("LV2_LV3_UNSUPPORTED_WITH_HB_SPLIT");
-        if (mode == BackendMode::kHbSplit && StrictMode()) {
+        if (StrictMode()) {
             if (result != nullptr) *result = CUDA_ERROR_NOT_SUPPORTED;
             return true;
         }
@@ -915,7 +915,7 @@ bool TryLaunchKernel(CUfunction function,
     const auto info_opt = FindFunctionInfo(function);
     if (!info_opt) {
         LogFallback("PTX_UNAVAILABLE");
-        if (mode == BackendMode::kHbSplit && StrictMode()) {
+        if (StrictMode()) {
             if (result != nullptr) *result = CUDA_ERROR_NOT_SUPPORTED;
             return true;
         }
@@ -925,7 +925,7 @@ bool TryLaunchKernel(CUfunction function,
 
     if (xqueue == nullptr) {
         LogFallback("NO_XQUEUE", &info);
-        if (mode == BackendMode::kHbSplit && StrictMode()) {
+        if (StrictMode()) {
             if (result != nullptr) *result = CUDA_ERROR_NOT_SUPPORTED;
             return true;
         }
@@ -934,7 +934,7 @@ bool TryLaunchKernel(CUfunction function,
     if (!info.capability.splittable || info.transformed_function == nullptr) {
         LogFallback(info.capability.fallback_reason.empty() ? "NOT_SPLITTABLE"
                                                             : info.capability.fallback_reason.c_str(), &info);
-        if (mode == BackendMode::kHbSplit && StrictMode()) {
+        if (StrictMode()) {
             if (result != nullptr) *result = CUDA_ERROR_NOT_SUPPORTED;
             return true;
         }
@@ -942,7 +942,7 @@ bool TryLaunchKernel(CUfunction function,
     }
     if (extra != nullptr) {
         LogFallback("EXTRA_LAUNCH_FORMAT_UNSUPPORTED", &info);
-        if (mode == BackendMode::kHbSplit && StrictMode()) {
+        if (StrictMode()) {
             if (result != nullptr) *result = CUDA_ERROR_NOT_SUPPORTED;
             return true;
         }
@@ -950,7 +950,7 @@ bool TryLaunchKernel(CUfunction function,
     }
     if (kernel_params == nullptr) {
         LogFallback("KERNEL_PARAMS_NULL", &info);
-        if (mode == BackendMode::kHbSplit && StrictMode()) {
+        if (StrictMode()) {
             if (result != nullptr) *result = CUDA_ERROR_INVALID_VALUE;
             return true;
         }
@@ -965,6 +965,21 @@ bool TryLaunchKernel(CUfunction function,
     }
 
     return SubmitSplitCommands(info, grid, block, shared_mem_bytes, stream, kernel_params, xqueue, result);
+}
+
+bool TryLaunchKernel(CUfunction function,
+                     unsigned int grid_dim_x, unsigned int grid_dim_y, unsigned int grid_dim_z,
+                     unsigned int block_dim_x, unsigned int block_dim_y, unsigned int block_dim_z,
+                     unsigned int shared_mem_bytes, CUstream stream, void **kernel_params,
+                     void **extra, std::shared_ptr<preempt::XQueue> xqueue, CUresult *result)
+{
+    const BackendMode mode = BackendModeFromEnv();
+    if (mode == BackendMode::kNative) return false;
+    return TryLaunchKernelFixed(function,
+                                grid_dim_x, grid_dim_y, grid_dim_z,
+                                block_dim_x, block_dim_y, block_dim_z,
+                                shared_mem_bytes, stream, kernel_params, extra,
+                                xqueue, result);
 }
 
 } // namespace xsched::cuda::hb_split
