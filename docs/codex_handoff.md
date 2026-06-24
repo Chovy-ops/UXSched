@@ -20,6 +20,8 @@ describing them as complete conflicts with code and must be treated as stale.
 
 * Repository: `/home/zm/project/UXSched`
 * Current branch: `feature/hummingbird-split-backend`
+* Current CUTLASS Runtime bridge work starts from:
+  `157662a add CUTLASS launch compatibility probe`
 * HEAD commit at the start of the current NO_XQUEUE fix:
   `d8697de record Gate 1 GPU smoke blocker`
 * Baseline commit: `4146c1e add CUDA Hummingbird split backend`
@@ -54,6 +56,69 @@ Chronological order:
 * `d8697de record Gate 1 GPU smoke blocker`
   * Added the Gate 1 smoke runner and recorded the earlier Codex tool-session
     GPU visibility blocker.
+* `157662a add CUTLASS launch compatibility probe`
+  * Added the first CUTLASS SIMT FP32 GEMM launch-path probe and runner.
+  * User manual GPU result showed Native and UXSched NATIVE correctness pass,
+    but Runtime launch did not enter UXSched HB_FIXED.
+
+## 2026-06-24 CUTLASS Runtime Bridge Update
+
+Root cause from local binary/source audit:
+
+* `build-cutlass-cu128/cutlass_launch_probe` links shared cudart:
+  `libcudart.so.12 => /usr/local/cuda-12.8/lib64/libcudart.so.12`.
+* The probe dynamically imports `cudaLaunchKernel`,
+  `__cudaRegisterFatBinary`, `__cudaRegisterFatBinaryEnd`,
+  `__cudaRegisterFunction`, and `__cudaUnregisterFatBinary`.
+* `cuobjdump --list-elf` shows `sm_120` cubin, and
+  `cuobjdump --dump-ptx` shows CUTLASS PTX for `sm_120`.
+* Before this update, `libshimcuda.so` did not export CUDA Runtime symbols, so
+  CUTLASS Runtime launches bypassed the UXSched HB_FIXED Driver path.
+
+Implemented bridge:
+
+* Added UXSched-owned CUDA Runtime interception inside the existing
+  `libshimcuda.so`; no second hook library is introduced.
+* Intercepts Runtime fatbin/function registration and `cudaLaunchKernel`.
+* Builds a host-stub to CUTLASS kernel metadata map from
+  `__cudaRegisterFunction`.
+* Extracts plain PTX from the Runtime fatbin, then reuses existing
+  `hb_split::XModuleLoadDataEx`, `XModuleGetFunction`, and
+  `TryLaunchKernelFixed`.
+* `cudaLaunchKernelExC` is traced and falls back to real cudart because the
+  current CUTLASS probe does not use it.
+* Fallbacks call the true CUDA Runtime launch. They do not bypass XQueue, fake
+  backend stats, remove verified-kernel checks, or directly launch transformed
+  kernels outside UXSched.
+* Added `UXSCHED_CUDART_TRACE=1` logs for fatbin registration, function
+  registration, launch interception, function resolution, backend selection,
+  and fallback reasons.
+
+Build and static checks passed:
+
+```bash
+cmake -S . -B build-hb-cu128
+cmake --build build-hb-cu128 --target shimcuda -j2
+tools/build_cutlass_launch_probe.sh --build-dir build-cutlass-cu128 --cutlass-root /home/zm/project/cutlass --cuda-home /usr/local/cuda-12.8 --cuda-compiler /usr/local/cuda-12.8/bin/nvcc
+bash -n tools/build_cutlass_launch_probe.sh
+bash -n tools/run_cutlass_launch_probe.sh
+git diff --check
+```
+
+Static evidence:
+
+* `nm -D build-hb-cu128/platforms/cuda/libshimcuda.so` now exports
+  `__cudaRegisterFatBinary`, `__cudaRegisterFatBinaryEnd`,
+  `__cudaRegisterFunction`, `__cudaUnregisterFatBinary`,
+  `cudaLaunchKernel`, and `cudaLaunchKernelExC`.
+* `ldd build-cutlass-cu128/cutlass_launch_probe` shows shared `libcudart.so.12`.
+* `readelf -Ws` / `nm -D` show the probe imports the Runtime registration and
+  launch symbols dynamically.
+* `cuobjdump --list-elf` shows `cutlass_launch_probe.1.sm_120.cubin`.
+* `cuobjdump --dump-ptx` shows CUTLASS PTX text.
+
+GPU validation was not run in Codex. The user must rerun
+`tools/run_cutlass_launch_probe.sh` from a normal WSL GPU terminal.
 
 ## Implemented and verified
 

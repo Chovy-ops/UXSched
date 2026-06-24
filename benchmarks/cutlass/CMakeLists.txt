@@ -19,8 +19,8 @@ if(NOT EXISTS "${CUTLASS_ROOT}/tools/util/include")
   message(FATAL_ERROR "CUTLASS_ROOT_UNAVAILABLE: ${CUTLASS_ROOT}/tools/util/include not found")
 endif()
 
-if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "120")
-  message(FATAL_ERROR "This CUTLASS probe only supports CMAKE_CUDA_ARCHITECTURES=120")
+if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "120-real;120-virtual")
+  message(FATAL_ERROR "This CUTLASS probe only supports CMAKE_CUDA_ARCHITECTURES=120-real;120-virtual")
 endif()
 
 find_package(CUDAToolkit REQUIRED)
@@ -52,12 +52,14 @@ target_compile_definitions(cutlass_launch_probe PRIVATE
 
 target_compile_options(cutlass_launch_probe PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+  $<$<COMPILE_LANGUAGE:CUDA>:--compress-mode=none>
 )
 
 target_link_libraries(cutlass_launch_probe PRIVATE CUDA::cudart)
 
 set_target_properties(cutlass_launch_probe PROPERTIES
-  CUDA_ARCHITECTURES 120
+  CUDA_ARCHITECTURES "120-real;120-virtual"
+  CUDA_RUNTIME_LIBRARY Shared
   CUDA_SEPARABLE_COMPILATION OFF
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )

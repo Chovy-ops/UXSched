@@ -6,10 +6,10 @@ BUILD_DIR="${ROOT}/build-cutlass-cu128"
 CUTLASS_ROOT_VALUE="${CUTLASS_ROOT:-/home/zm/project/cutlass}"
 CUDA_HOME_VALUE="${CUDA_HOME:-/usr/local/cuda-12.8}"
 CUDA_COMPILER_VALUE="${CUDACXX:-/usr/local/cuda-12.8/bin/nvcc}"
-ARCH="120"
+ARCH="120-real;120-virtual"
 
 usage() {
-  printf 'Usage: %s [--build-dir DIR] [--cutlass-root DIR] [--cuda-home DIR] [--cuda-compiler PATH] [--arch 120]\n' "$0"
+  printf 'Usage: %s [--build-dir DIR] [--cutlass-root DIR] [--cuda-home DIR] [--cuda-compiler PATH] [--arch 120-real;120-virtual]\n' "$0"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -46,8 +46,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "${ARCH}" != "120" ]]; then
-  printf 'only CUDA architecture 120 is supported by this probe\n' >&2
+if [[ "${ARCH}" != "120-real;120-virtual" ]]; then
+  printf 'only CUDA architecture 120-real;120-virtual is supported by this probe\n' >&2
   exit 2
 fi
 
@@ -69,7 +69,7 @@ NVCC_VERSION="$("${CUDA_COMPILER_VALUE}" --version | tr '\n' ' ' | sed 's/[[:spa
 CONFIGURE_CMD=(
   cmake -S "${ROOT}/benchmarks/cutlass" -B "${BUILD_DIR}"
   -DCUTLASS_ROOT="${CUTLASS_ROOT_VALUE}"
-  -DCMAKE_CUDA_ARCHITECTURES=120
+  -DCMAKE_CUDA_ARCHITECTURES="${ARCH}"
   -DCMAKE_CUDA_COMPILER="${CUDA_COMPILER_VALUE}"
   -DCMAKE_BUILD_TYPE=Release
 )

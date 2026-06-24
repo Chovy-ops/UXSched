@@ -34,7 +34,8 @@ Allowed status values in this file:
 | open_resnet_like GPU validation | FAILED | Native and UXSched split launch evidence exists, but prior non-correctness UXSched open_resnet_like cases returned 139 and did not provide checksum/hash evidence. Old open_resnet correctness is deferred and is not a blocker for CUTLASS planning. |
 | CUDA stream to XQueue association fix | RUNTIME VERIFIED | Default-stream and explicit-stream Driver API probes both reached `HB_SPLIT` with transformed child launches and `NO_XQUEUE=0` in `results/hb_gate1_after_xqueue_fix_20260624_170107`. |
 | CUTLASS realtime benchmark plan | IMPLEMENTED | `docs/cutlass_realtime_benchmark_plan.md` audits the current realtime benchmark and defines the CUTLASS replacement plan. |
-| CUTLASS launch compatibility probe | COMPILE VERIFIED | `benchmarks/cutlass/cutlass_launch_probe.cu` builds with external CUTLASS revision `ad7b2f5`, CUDA 12.8, and native SM120. Runtime GPU compatibility is not tested in Codex. |
+| CUTLASS launch compatibility probe | COMPILE VERIFIED | `benchmarks/cutlass/cutlass_launch_probe.cu` builds with external CUTLASS revision `ad7b2f5`, CUDA 12.8, native SM120 SASS, and PTX. User manual GPU result verified Native and UXSched NATIVE correctness, but HB_FIXED backend was not exercised before the Runtime bridge. Runtime GPU compatibility must be rerun outside Codex. |
+| CUTLASS CUDA Runtime bridge | COMPILE VERIFIED | Existing `libshimcuda.so` now intercepts CUDA Runtime fatbin/function registration and `cudaLaunchKernel`, maps host stubs to registered CUTLASS kernel names/PTX, and reuses the existing HB_FIXED backend. Static symbol and build checks passed; real GPU HB_FIXED transformed launch is not yet rerun. |
 | CUTLASS workload | NOT TESTED | Full HP/LP realtime workload is not implemented yet. CUTLASS correctness is mandatory before any P99 claim. |
 | Persistent agent rules | IMPLEMENTED | Added `AGENTS.md` with UXSched-Hummingbird integration rules. |
 | Gate 1 smoke runner | IMPLEMENTED | `tools/run_hb_gate1_smoke.sh` now records correctness, sync, HP passthrough, fallback artifacts, and writes `gate1_summary.env`; GPU rerun is required. |
@@ -98,6 +99,20 @@ Allowed status values in this file:
   probes, and a final `gate1_summary.env`.
 - Added `docs/cutlass_realtime_benchmark_plan.md` with the CUTLASS realtime
   benchmark audit and implementation plan.
+- Added CUTLASS CUDA Runtime bridge inside the UXSched CUDA shim:
+  - `__cudaRegisterFatBinary`
+  - `__cudaRegisterFatBinaryEnd`
+  - `__cudaRegisterFunction`
+  - `__cudaUnregisterFatBinary`
+  - `cudaLaunchKernel`
+  - `cudaLaunchKernelExC` traced with safe Runtime fallback
+- Added `UXSCHED_CUDART_TRACE=1` diagnostics for Runtime registration, launch
+  interception, function resolution, backend selection, and fallback reasons.
+- Updated the CUTLASS probe build to use shared cudart and
+  `CMAKE_CUDA_ARCHITECTURES=120-real;120-virtual` with uncompressed fatbin PTX.
+- Updated `tools/run_cutlass_launch_probe.sh` to save `ldd`, dynamic symbol,
+  `cuobjdump` PTX/SASS evidence, Runtime registration logs, Runtime intercept
+  counts, and discovered CUTLASS kernel name.
 - Added CUTLASS launch compatibility probe and runner:
   - `benchmarks/cutlass/CMakeLists.txt`;
   - `benchmarks/cutlass/cutlass_launch_probe.cu`;

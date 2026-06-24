@@ -26,6 +26,83 @@ The older `open_resnet_like_runtime_eval` correctness path is not a blocker for
 starting the CUTLASS workload, but no P99 claim is valid until CUTLASS
 correctness and synchronization pass.
 
+## CUTLASS Runtime Bridge Status
+
+The first GPU run of `tools/run_cutlass_launch_probe.sh` with commit
+`157662a` proved:
+
+- CUTLASS Native SM120 builds with external CUTLASS revision `ad7b2f5`.
+- CUTLASS Native Runtime correctness passes.
+- CUTLASS UXSched NATIVE Runtime correctness passes.
+- CUTLASS UXSched HB_FIXED Runtime did not exercise the HB backend:
+  Runtime launch was not intercepted and all HB transform/parent/child counts
+  were zero.
+
+Root cause:
+
+- The probe uses shared `libcudart.so.12`, not static cudart.
+- The probe dynamically imports `cudaLaunchKernel` and Runtime registration
+  symbols.
+- The probe contains `sm_120` SASS and CUTLASS PTX.
+- The prior `libshimcuda.so` only intercepted Driver API entry points, so CUDA
+  Runtime registration and `cudaLaunchKernel` bypassed the UXSched HB_FIXED
+  backend.
+
+Bridge design now implemented in the UXSched CUDA shim:
+
+```text
+__cudaRegisterFatBinary
+  -> extract uncompressed PTX from Runtime fatbin
+__cudaRegisterFunction
+  -> map host stub to device kernel name and fatbin
+cudaLaunchKernel
+  -> resolve host stub to registered CUTLASS kernel
+  -> load PTX through existing hb_split module path
+  -> resolve CUfunction through existing hb_split function path
+  -> resolve/create stream XQueue
+  -> call TryLaunchKernelFixed for HB_FIXED
+  -> otherwise call true cudaLaunchKernel fallback
+```
+
+Safe fallback is required for unavailable PTX, missing registration, unverified
+kernel, unsupported parameters, dynamic launch-ex path, missing XQueue,
+NATIVE strategy, HP passthrough, or transform failure. Fallback must call the
+real CUDA Runtime launch and preserve correctness.
+
+`UXSCHED_CUDART_TRACE=1` records:
+
+- `runtime_fatbin_registered`
+- `runtime_function_registered`
+- `runtime_launch_intercepted`
+- `runtime_launch_function_resolved`
+- `runtime_backend_selected`
+- `runtime_launch_fallback`
+
+The CUTLASS probe build is now pinned to:
+
+```text
+CMAKE_CUDA_ARCHITECTURES=120-real;120-virtual
+CUDA_RUNTIME_LIBRARY=Shared
+--compress-mode=none
+```
+
+This preserves native SM120 cubin and extractable PTX for the Runtime bridge.
+
+The updated runner saves:
+
+- `probe_binary/ldd.txt`
+- `probe_binary/dynamic_symbols.txt`
+- `probe_binary/cuobjdump_elf.txt`
+- `probe_binary/cuobjdump_ptx.txt`
+- per-case `runtime_registration.log`
+- per-case Runtime/HB backend counters
+- `discovered_cutlass_kernel_name` in `cutlass_probe_summary.env`
+
+The Runtime bridge is currently compile/static verified only. A normal WSL GPU
+rerun must observe `runtime_launch_intercepted_count > 0`,
+`runtime_function_resolved_count > 0`, transformed child launches, no fallback,
+no `NO_XQUEUE`, and CUTLASS correctness before this phase can pass.
+
 ## `realtime_inference_latency.py` Call Graph
 
 Entry:
