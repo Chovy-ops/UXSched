@@ -20,8 +20,8 @@ describing them as complete conflicts with code and must be treated as stale.
 
 * Repository: `/home/zm/project/UXSched`
 * Current branch: `feature/hummingbird-split-backend`
-* HEAD commit at the start of the 2026-06-24 Gate 1 attempt:
-  `f605e8d refresh Codex handoff status`
+* HEAD commit at the start of the current NO_XQUEUE fix:
+  `d8697de record Gate 1 GPU smoke blocker`
 * Baseline commit: `4146c1e add CUDA Hummingbird split backend`
 * Working tree status: clean except untracked build and result directories after
   committing this documentation/test-runner update
@@ -51,6 +51,9 @@ Chronological order:
   * Added `AGENTS.md`, created this handoff file, and updated status rules.
 * `f605e8d refresh Codex handoff status`
   * Refreshed the handoff before the current Gate 1 attempt.
+* `d8697de record Gate 1 GPU smoke blocker`
+  * Added the Gate 1 smoke runner and recorded the earlier Codex tool-session
+    GPU visibility blocker.
 
 ## Implemented and verified
 
@@ -70,7 +73,8 @@ Chronological order:
 | Fixed grid decomposition | yes | yes | no | no | no |
 | `SplitCommandGroup` child tracking | yes | yes | no | no | no |
 | Per-XQueue threshold change to `1,1` | yes | yes | no | no | no |
-| Gate 1 smoke runner | yes | yes | blocked | no | no |
+| Gate 1 smoke runner | yes | yes | partial | no | no |
+| CUDA stream to XQueue trace and auto-association | yes | yes | pending manual GPU rerun | no | no |
 | GPU runtime benchmarks | no | no | no | no | no |
 
 Compilation success is not runtime verification. No performance numbers are
@@ -91,9 +95,12 @@ claimed.
   * `HB_FIXED` delegates to `hb_split::TryLaunchKernelFixed`.
   * `HB_RUNTIME` and `AUTO` explicitly fallback Native.
 * HB_FIXED:
-  * COMPILE VERIFIED, NOT TESTED on GPU.
+  * COMPILE VERIFIED, Gate 1 remains FAIL/PARTIAL pending manual GPU rerun.
   * Source: `platforms/cuda/hal/src/hb_split/backend.cpp`,
     `TryLaunchKernelFixed`, `SubmitSplitCommands`.
+  * The manual GPU run in `results/hb_gate1_manual_20260624_163059` reached
+    PTX transform but fell back with `reason=NO_XQUEUE` before any transformed
+    child launch.
 * HB_RUNTIME:
   * IMPLEMENTED as Native fallback only.
   * Source: `HummingbirdRuntimeStrategy::SubmitKernel`, fallback reason
@@ -125,14 +132,17 @@ claimed.
   * Source: `TryLaunchKernelFixed`, `IsLowPriority`, log reason
     `HIGH_PRIORITY_PASSTHROUGH`.
 * fallback:
-  * COMPILE VERIFIED, NOT TESTED on GPU.
+  * COMPILE VERIFIED, pending manual GPU rerun.
   * Sources: `TryLaunchKernelFixed`, `SubmitKernelWithRuntimeStrategy`.
+  * PTX-present but unverified kernels now register `FunctionInfo` and fall back
+    as `KERNEL_NOT_VERIFIED` instead of `<unknown>/PTX_UNAVAILABLE`.
 * Gate 1 smoke runner:
   * IMPLEMENTED as `tools/run_hb_gate1_smoke.sh`.
   * Saves per-case `command.txt`, `env.txt`, stdout/stderr, JSONL, return code,
     checksum extraction, split trace extraction, transformed launch evidence,
     child completion evidence, parent completion evidence, and xserver logs.
-  * Latest run was blocked before real CUDA kernel execution.
+  * Now writes UXSched backend stats separately from workload-internal split
+    stats and includes minimal default/explicit Driver API XQueue probes.
 * profiler:
   * BLOCKED, not implemented.
 * kernel-tick:
@@ -170,34 +180,38 @@ claimed.
 
 ## Current blocker
 
-Blocker type: GPU device access in the current Codex tool session.
+Blocker type: Gate 1 `HB_FIXED` did not reach UXSched split launch in the manual
+GPU run.
 
-Exact observed errors from this session:
+Manual result directory:
 
 ```text
-ls -l /dev/dxg
-ls: cannot access '/dev/dxg': No such file or directory
-
-nvidia-smi
-Failed to initialize NVML: GPU access blocked by the operating system
-Failed to properly shut down NVML: GPU access blocked by the operating system
-
-python -c 'import torch; print(torch.cuda.is_available(), torch.cuda.device_count())'
-False 0
+results/hb_gate1_manual_20260624_163059
 ```
 
-Because GPU access is blocked inside this tool session, Gate 1 cannot reach
-real kernel execution. There is no evidence yet for RUNTIME VERIFIED,
-CORRECTNESS VERIFIED, GLOBAL SCHEDULING VERIFIED, or PERFORMANCE VERIFIED
-status.
+Observed manual GPU result:
 
-The user reported that the external WSL terminal had GPU access before Codex was
-started. That state was not visible inside this Codex tool session; this entry
-records a fresh check, not a reused previous conclusion.
+* Native open_resnet_like ran on RTX 5060.
+* UXSched shim loaded and xserver accepted clients.
+* HP priority `10` logged `HIGH_PRIORITY_PASSTHROUGH`.
+* LP priority `-10` transformed at least the open_resnet_like PTX kernels, but
+  actual launches fell back with `backend_selected=NATIVE reason=NO_XQUEUE`.
+* `transformed_launch_evidence.log` showed no transformed child launch.
+* `sync_event_boundary_probe` workload fields such as `lp_split_launched=1402`
+  and `fixed_split_blocks=16` are workload-internal split counters, not UXSched
+  backend split evidence.
+
+Root cause found in code: `cuLaunchKernel` only looked up an already-registered
+XQueue by raw `CUstream`; stream creation from the workload did not pass through
+the shim's `XStreamCreate*` wrapper, and default stream was explicitly mapped to
+`xqueue=nullptr`. The current fix adds launch-time auto-association for missing
+managed streams and a per-context synthetic handle for default stream. This is
+COMPILE VERIFIED only until the user reruns the manual GPU probe.
 
 ## Next task
 
-The next gated task is Gate 1 GPU validation of `HB_FIXED`.
+The next gated task is a manual GPU rerun of the minimal `HB_FIXED` LP probe and
+then correctness-mode Native/UXSched Native/HB_FIXED comparison.
 
 Do not start the complete Hummingbird runtime, coordinator, profiler,
 kernel-tick, bubble detection, consolidation, or CUTLASS workload until Gate 1
@@ -249,68 +263,82 @@ Confirmed paths:
 /home/zm/project/UXSched/build-native/service/xcli
 /home/zm/project/hummingbird/build-lite/benchmarks/hb_open_resnet_like_eval
 /home/zm/project/hummingbird/build-lite/benchmarks/hb_open_resnet_like_runtime_eval
+/home/zm/project/UXSched/build-hb/hb_xqueue_probe
 ```
 
-GPU access check:
-
-```bash
-nvidia-smi
-```
-
-Last run in this handoff session:
-
-```text
-Failed to initialize NVML: GPU access blocked by the operating system
-Failed to properly shut down NVML: GPU access blocked by the operating system
-```
-
-Manual Gate 1 smoke outline, once GPU access works:
+Minimal manual retest after this fix:
 
 ```bash
 cd /home/zm/project/UXSched
-export LD_PRELOAD=/home/zm/project/UXSched/build-hb/platforms/cuda/libshimcuda.so
-export XSCHED_SCHEDULER=GLB
-export XSCHED_AUTO_XQUEUE=ON
-export XSCHED_AUTO_XQUEUE_LEVEL=1
-export XSCHED_AUTO_XQUEUE_PRIORITY=-10
-export UXSCHED_CUDA_RUNTIME_STRATEGY=HB_FIXED
-export UXSCHED_HB_SPLIT_BLOCKS=512
-export UXSCHED_HB_STRICT=0
-export UXSCHED_HB_VERIFIED_KERNELS=hb_open_resnet_conv2d_kernel,hb_open_resnet_relu_kernel,hb_open_resnet_residual_add_kernel,hb_open_resnet_checksum_kernel
+tools/build_hb_xqueue_probe.sh build-hb/hb_xqueue_probe
+
+env -u LD_PRELOAD -u XSCHED_POLICY build-hb/service/xserver HPF 50000 \
+  > /tmp/uxsched_hb_gate1_xserver.out 2> /tmp/uxsched_hb_gate1_xserver.err &
+XSERVER_PID=$!
+
+env -u XSCHED_POLICY -u HB_TASK_PRIORITY \
+  LD_LIBRARY_PATH=/home/zm/project/UXSched/build-hb/platforms/cuda:/home/zm/project/UXSched/build-hb/preempt:/usr/lib/wsl/lib \
+  LD_PRELOAD=/home/zm/project/UXSched/build-hb/platforms/cuda/libshimcuda.so \
+  XSCHED_CUDA_LIB=/usr/lib/wsl/lib/libcuda.so.1 \
+  CUXTRA_CUDA_LIB=/usr/lib/wsl/lib/libcuda.so.1 \
+  XSCHED_SCHEDULER=GLB \
+  XSCHED_AUTO_XQUEUE=ON \
+  XSCHED_AUTO_XQUEUE_LEVEL=1 \
+  XSCHED_AUTO_XQUEUE_PRIORITY=-10 \
+  UXSCHED_CUDA_RUNTIME_STRATEGY=HB_FIXED \
+  UXSCHED_XQUEUE_TRACE=1 \
+  UXSCHED_HB_SPLIT_BLOCKS=512 \
+  UXSCHED_HB_STRICT=0 \
+  UXSCHED_HB_VERIFIED_KERNELS=hb_xqueue_probe_kernel \
+  build-hb/hb_xqueue_probe --stream default --blocks 1024 --threads 1
+
+env -u XSCHED_POLICY -u HB_TASK_PRIORITY \
+  LD_LIBRARY_PATH=/home/zm/project/UXSched/build-hb/platforms/cuda:/home/zm/project/UXSched/build-hb/preempt:/usr/lib/wsl/lib \
+  LD_PRELOAD=/home/zm/project/UXSched/build-hb/platforms/cuda/libshimcuda.so \
+  XSCHED_CUDA_LIB=/usr/lib/wsl/lib/libcuda.so.1 \
+  CUXTRA_CUDA_LIB=/usr/lib/wsl/lib/libcuda.so.1 \
+  XSCHED_SCHEDULER=GLB \
+  XSCHED_AUTO_XQUEUE=ON \
+  XSCHED_AUTO_XQUEUE_LEVEL=1 \
+  XSCHED_AUTO_XQUEUE_PRIORITY=-10 \
+  UXSCHED_CUDA_RUNTIME_STRATEGY=HB_FIXED \
+  UXSCHED_XQUEUE_TRACE=1 \
+  UXSCHED_HB_SPLIT_BLOCKS=512 \
+  UXSCHED_HB_STRICT=0 \
+  UXSCHED_HB_VERIFIED_KERNELS=hb_xqueue_probe_kernel \
+  build-hb/hb_xqueue_probe --stream explicit --blocks 1024 --threads 1
+
+kill "${XSERVER_PID}"
+wait "${XSERVER_PID}" 2>/dev/null || true
 ```
 
-Then run the existing PTX-visible open-resnet-like driver workload from
-Hummingbird without modifying the Hummingbird repository. Use the user's known
-script/workload entrypoint for the local environment.
-
-Reusable smoke wrapper added in this session:
+Reusable smoke wrapper:
 
 ```bash
 cd /home/zm/project/UXSched
 bash tools/run_hb_gate1_smoke.sh --output-dir results/hb_gate1_<timestamp>
 ```
 
-Latest artifact directory:
+Manual artifact directory that exposed the current blocker:
 
 ```text
-results/hb_gate1_20260624_162217
+results/hb_gate1_manual_20260624_163059
 ```
 
-Latest artifact status:
+Manual artifact status:
 
 ```text
-native_open_resnet_like_lp: BLOCKED reason=CUDA_UNAVAILABLE
-uxsched_native_lp: BLOCKED reason=CUDA_UNAVAILABLE
-uxsched_hb_fixed_lp: BLOCKED reason=CUDA_UNAVAILABLE
-uxsched_hb_fixed_hp_passthrough: BLOCKED reason=CUDA_UNAVAILABLE
-uxsched_hb_fixed_fallback_unverified: BLOCKED reason=CUDA_UNAVAILABLE
-sync_event_boundary_probe: BLOCKED reason=CUDA_UNAVAILABLE
+native_open_resnet_like_lp: RAN on GPU
+uxsched_native_lp: RAN on GPU
+uxsched_hb_fixed_lp: RAN but fell back Native with reason=NO_XQUEUE
+uxsched_hb_fixed_hp_passthrough: RAN with HIGH_PRIORITY_PASSTHROUGH
+sync_event_boundary_probe: workload-internal split counters only; no UXSched split trace
 xserver: started with HPF, accepted clients, then stopped
 ```
 
-No checksum, split trace, transformed launch evidence, or child completion was
-observed because each workload wrote a JSONL marker with
-`"cuda_available":false` before any kernel launch.
+Gate 1 remains FAIL/PARTIAL until a fresh manual run observes
+`uxsched_hb_no_xqueue_count=0`, transformed child submissions, child completion,
+and checksum/output hash equality.
 
 ## Expected outputs
 
@@ -324,10 +352,14 @@ Built target shimcuda
 Expected runtime logs for `HB_FIXED` Gate 1:
 
 * `[UXSCHED-HB] transform_succeeded function=<kernel>`
+* `[UXSCHED-HB] transformed_module_loaded transformed_module=<...>`
 * `[UXSCHED-HB] backend_selected=HB_SPLIT`
 * `[UXSCHED-HB] split_blocks=512`
 * `[UXSCHED-HB] split_count=<N>` where `N > 1`
+* `[UXSCHED-HB] child_launch_submitted ... transformed_function=<...>`
+* `[UXSCHED-HB] child_launch_completed ...`
 * `[UXSCHED-HB] xqueue=<...> lp_in_flight_threshold=1 batch_size=1`
+* `[UXSCHED-XQUEUE] ... auto_create_attempted=1 create_result=0 ...`
 * HP run logs include `HIGH_PRIORITY_PASSTHROUGH`
 * Unsupported kernel logs include `backend_selected=NATIVE reason=<reason>`
 

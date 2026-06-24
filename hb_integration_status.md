@@ -21,7 +21,7 @@ Allowed status values in this file:
 | `NativeRuntimeStrategy` | COMPILE VERIFIED | Preserves original `CudaKernelLaunchCommand` path. |
 | `HummingbirdRuntimeStrategy` | COMPILE VERIFIED | `HB_FIXED` delegates to fixed split implementation. |
 | `UXSCHED_CUDA_RUNTIME_STRATEGY=NATIVE` | COMPILE VERIFIED | Runtime tests not run. |
-| `UXSCHED_CUDA_RUNTIME_STRATEGY=HB_FIXED` | COMPILE VERIFIED | Runtime tests not run. |
+| `UXSCHED_CUDA_RUNTIME_STRATEGY=HB_FIXED` | FAILED | Manual GPU Gate 1 reached PTX transform but fell back with `NO_XQUEUE`; code fix is compile verified and pending manual rerun. |
 | `UXSCHED_CUDA_RUNTIME_STRATEGY=HB_RUNTIME` | IMPLEMENTED | Explicit Native fallback: runtime not implemented yet. |
 | `UXSCHED_CUDA_RUNTIME_STRATEGY=AUTO` | IMPLEMENTED | Explicit Native fallback: coordinator unavailable. |
 | Per-device HB coordinator | BLOCKED | Not implemented. |
@@ -30,8 +30,9 @@ Allowed status values in this file:
 | kernel-tick launcher | BLOCKED | Not implemented. |
 | small bubble hints | BLOCKED | Not implemented. |
 | large bubble / consolidation | BLOCKED | Not implemented. |
-| GPU visibility | BLOCKED | Fresh 2026-06-24 Codex tool-session check: `/dev/dxg` missing, `nvidia-smi` reports GPU access blocked, `torch.cuda.is_available()` is `False`. |
-| open_resnet_like GPU validation | BLOCKED | Gate 1 smoke attempted; every workload wrote `"cuda_available":false` before kernel launch. |
+| GPU visibility | RUNTIME VERIFIED | User manual WSL Gate 1 run used RTX 5060 and recorded `cuda_available=true`; do not reuse earlier Codex tool-session GPU blocker as current status. |
+| open_resnet_like GPU validation | FAILED | Native and UXSched Native ran; HB_FIXED LP did not split because `KernelLaunch.xqueue` was null. |
+| CUDA stream to XQueue association fix | COMPILE VERIFIED | Adds launch-time auto-association, default-stream synthetic context handle, and `UXSCHED_XQUEUE_TRACE=1`; pending manual GPU rerun. |
 | CUTLASS workload | BLOCKED | Must wait until Gate 8. |
 | Persistent agent rules | IMPLEMENTED | Added `AGENTS.md` with UXSched-Hummingbird integration rules. |
 | Gate 1 smoke runner | IMPLEMENTED | `tools/run_hb_gate1_smoke.sh` records per-case artifacts and xserver logs. |
@@ -74,9 +75,18 @@ Allowed status values in this file:
 - Added `SplitCommandGroup` child completion tracking.
 - Added per-XQueue LP split launch config `threshold=1, batch_size=1`.
 - Added structured `[UXSCHED-HB]` logs.
+- Added optional `[UXSCHED-XQUEUE]` diagnostics with `UXSCHED_XQUEUE_TRACE=1`.
+- Added launch-time CUDA stream to XQueue auto-association for streams that did
+  not pass through `XStreamCreate*`.
+- Added default stream support through a per-context synthetic HwQueue handle.
+- Added PTX-present unverified-kernel metadata so that fallback can report
+  `KERNEL_NOT_VERIFIED`.
+- Added minimal Driver API XQueue probe under `tools/hb_xqueue_probe.cpp`.
 - Built `halcuda` and `shimcuda` with HB enabled.
 - Built `halcuda` and `shimcuda` with default HB disabled.
-- Added `tools/run_hb_gate1_smoke.sh` to preserve Gate 1 smoke artifacts.
+- Updated `tools/run_hb_gate1_smoke.sh` to preserve Gate 1 smoke artifacts,
+  split UXSched backend stats from workload-internal split stats, and run
+  default/explicit stream probes.
 - Built `xserver` and `xcli` in both `build-hb` and `build-native`.
 
 ## Partially Completed
@@ -89,6 +99,8 @@ Allowed status values in this file:
 - Multi-dimensional grid splitting is implemented, but runtime validation has
   not been run on real GPU workloads yet.
 - `cuLaunchKernelEx` remains native in stage 1.
+- Manual Gate 1 is PARTIAL/FAILED until the user reruns and observes real
+  transformed child launches plus checksum/output-hash equality.
 
 ## Not Completed
 
@@ -103,6 +115,8 @@ Allowed status values in this file:
 - cuBLAS/cuDNN closed kernel splitting.
 - CUTLASS ResNet-like workload implementation and validation.
 - GPU runtime benchmark repeat runs.
+- Per-device runtime coordinator, profiler, kernel-tick, bubble detection,
+  consolidation, and CUTLASS remain intentionally unimplemented.
 
 ## Modified Files
 
@@ -112,8 +126,14 @@ Allowed status values in this file:
 - `platforms/cuda/shim/include/xsched/cuda/shim/shim.h`
 - `platforms/cuda/shim/src/intercept.cpp`
 - `platforms/cuda/shim/src/shim.cpp`
+- `platforms/cuda/hal/include/xsched/cuda/hal/common/handle.h`
 - `platforms/cuda/hal/include/xsched/cuda/hal/hb_split/backend.h`
+- `platforms/cuda/hal/include/xsched/cuda/hal/level1/cuda_queue.h`
 - `platforms/cuda/hal/src/hb_split/backend.cpp`
+- `platforms/cuda/hal/src/arch/arch.cpp`
+- `platforms/cuda/hal/src/level1/cuda_queue.cpp`
+- `platforms/cuda/hal/src/runtime/runtime_strategy.cpp`
+- `tools/run_hb_gate1_smoke.sh`
 
 ## Added Files
 
@@ -136,8 +156,37 @@ Allowed status values in this file:
 - `AGENTS.md`
 - `hb_integration_status.md`
 - `tools/run_hb_gate1_smoke.sh`
+- `tools/hb_xqueue_probe.cpp`
+- `tools/build_hb_xqueue_probe.sh`
 
 ## Session Handoff
+
+2026-06-24 NO_XQUEUE fix:
+
+- Read manual result directory `results/hb_gate1_manual_20260624_163059`.
+- Current real Gate 1 conclusion is FAIL/PARTIAL:
+  - GPU was accessible in the user's WSL manual run.
+  - Native open_resnet_like and UXSched Native ran.
+  - HB_FIXED LP transformed PTX but actual launches fell back with
+    `backend_selected=NATIVE reason=NO_XQUEUE`.
+  - No transformed child launch was observed.
+- Root cause: `XLaunchKernel` only looked up pre-existing XQueue mappings and
+  default stream was hard-coded to `xqueue=nullptr`; the workload's explicit
+  stream did not pass through the shim stream-create wrapper.
+- Fix is COMPILE VERIFIED:
+  - launch-time auto-association for missing managed CUDA streams;
+  - per-context synthetic HwQueue handle for default stream;
+  - `UXSCHED_XQUEUE_TRACE=1` diagnostics;
+  - `KERNEL_NOT_VERIFIED` fallback metadata;
+  - minimal default/explicit Driver API probe.
+- Passed:
+  - `tools/build_hb_xqueue_probe.sh build-hb/hb_xqueue_probe`
+  - `cmake --build build-hb --target halcuda shimcuda -j2`
+  - `cmake --build build-native --target halcuda shimcuda -j2`
+  - `bash -n tools/run_hb_gate1_smoke.sh tools/build_hb_xqueue_probe.sh`
+- Not run in Codex tool environment: GPU runtime validation.
+- Required next task: user manual rerun of the minimal HB_FIXED LP probe and
+  correctness-mode checksum/output-hash comparison.
 
 2026-06-24 handoff refresh:
 
@@ -148,8 +197,8 @@ Allowed status values in this file:
 - Current next gated task remains Gate 1 GPU validation of `HB_FIXED`.
 - Build checks passed for `build-hb` and `build-native` targets
   `halcuda shimcuda`.
-- GPU access remains BLOCKED with `nvidia-smi`: `GPU access blocked by the
-  operating system`.
+- Historical note: this refresh observed GPU access blocked inside that Codex
+  tool session. It must not override the later user manual WSL GPU result.
 
 2026-06-24 Gate 1 attempt:
 
@@ -222,31 +271,31 @@ cmake --build build-native --target xserver xcli -j2
 
 ## Test Results
 
-Compile tests passed. Gate 1 smoke was attempted, but real GPU execution was
-blocked in the current Codex tool session. The final artifact directory is:
+Compile checks passed for the current NO_XQUEUE fix:
 
-```text
-results/hb_gate1_20260624_162217
+```bash
+tools/build_hb_xqueue_probe.sh build-hb/hb_xqueue_probe
+cmake --build build-hb --target halcuda shimcuda -j2
+cmake --build build-native --target halcuda shimcuda -j2
+bash -n tools/run_hb_gate1_smoke.sh tools/build_hb_xqueue_probe.sh
 ```
 
-Every smoke case recorded `cuda_available=false` in its JSONL output, so none of
-the Gate 1 runtime verification conditions were satisfied. GPU access is
-currently blocked by the operating system:
+Manual GPU runtime result currently on record:
 
 ```text
-nvidia-smi
-Failed to initialize NVML: GPU access blocked by the operating system
-Failed to properly shut down NVML: GPU access blocked by the operating system
+results/hb_gate1_manual_20260624_163059
 ```
 
-Additional current-session checks:
+This manual run had GPU access and reached real CUDA execution, but HB_FIXED LP
+fell back with `NO_XQUEUE` and did not submit transformed child launches. After
+the current fix, Gate 1 must be manually rerun. Passing evidence must include:
 
 ```text
-ls -l /dev/dxg
-ls: cannot access '/dev/dxg': No such file or directory
-
-torch.cuda.is_available() = False
-torch.cuda.device_count() = 0
+uxsched_hb_no_xqueue_count=0
+uxsched_hb_child_launch_count > 1
+transformed CUfunction child_launch_submitted logs
+child_launch_completed / parent_launch_completed logs
+Native, UXSched NATIVE, and HB_FIXED checksum/output_hash equality
 ```
 
 ## Fallback Behavior

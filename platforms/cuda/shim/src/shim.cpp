@@ -1,4 +1,7 @@
 #include <list>
+#include <cstdlib>
+#include <cstring>
+#include <strings.h>
 
 #include "xsched/xqueue.h"
 #include "xsched/utils/map.h"
@@ -18,6 +21,131 @@ namespace xsched::cuda
 {
 
 static utils::ObjectMap<CUevent, std::shared_ptr<CudaEventRecordCommand>> g_events;
+
+#define XQUEUE_TRACE(format, ...) \
+    do { \
+        if (XQueueTraceEnabled()) { \
+            XINFO("[UXSCHED-XQUEUE] " format __VA_OPT__(,) __VA_ARGS__); \
+        } \
+    } while (0)
+
+namespace
+{
+
+bool XQueueTraceEnabled()
+{
+    static const bool enabled = []() {
+        const char *env = std::getenv("UXSCHED_XQUEUE_TRACE");
+        if (env == nullptr || env[0] == '\0') return false;
+        return std::strcmp(env, "0") != 0 && strcasecmp(env, "off") != 0 &&
+               strcasecmp(env, "false") != 0 && strcasecmp(env, "no") != 0;
+    }();
+    return enabled;
+}
+
+bool AutoXQueueEnabled()
+{
+    const char *env = std::getenv(XSCHED_AUTO_XQUEUE_ENV_NAME);
+    if (env == nullptr || env[0] == '\0') return false;
+    return std::strcmp(env, "0") != 0 && strcasecmp(env, "off") != 0 &&
+           strcasecmp(env, "false") != 0 && strcasecmp(env, "no") != 0;
+}
+
+HwQueueHandle LookupHwQueueHandle(CUstream stream, CUcontext *ctx_out, CUdevice *dev_out,
+                                  CUresult *ctx_ret_out, CUresult *dev_ret_out)
+{
+    CUcontext ctx = nullptr;
+    CUdevice dev = CU_DEVICE_INVALID;
+    CUresult ctx_ret = Driver::CtxGetCurrent(&ctx);
+    CUresult dev_ret = CUDA_ERROR_INVALID_CONTEXT;
+    if (ctx_ret == CUDA_SUCCESS && ctx != nullptr) {
+        dev_ret = Driver::CtxGetDevice(&dev);
+    }
+
+    if (ctx_out != nullptr) *ctx_out = ctx;
+    if (dev_out != nullptr) *dev_out = dev;
+    if (ctx_ret_out != nullptr) *ctx_ret_out = ctx_ret;
+    if (dev_ret_out != nullptr) *dev_ret_out = dev_ret;
+
+    if (stream == nullptr) {
+        if (ctx_ret != CUDA_SUCCESS || ctx == nullptr) return 0;
+        return GetHwQueueHandle(stream, ctx);
+    }
+    return GetHwQueueHandle(stream);
+}
+
+} // namespace
+
+std::shared_ptr<XQueue> ResolveXQueueForStream(const char *api, CUstream stream, bool auto_create)
+{
+    CUcontext ctx = nullptr;
+    CUdevice dev = CU_DEVICE_INVALID;
+    CUresult ctx_ret = CUDA_SUCCESS;
+    CUresult dev_ret = CUDA_SUCCESS;
+    HwQueueHandle lookup_hwq = LookupHwQueueHandle(stream, &ctx, &dev, &ctx_ret, &dev_ret);
+    auto hwq = HwQueueManager::Get(lookup_hwq);
+    auto xq = hwq == nullptr ? nullptr : hwq->GetXQueue();
+    const bool is_default_stream = stream == nullptr;
+    const bool auto_enabled = AutoXQueueEnabled();
+    const XQueueHandle xq_handle = xq == nullptr ? 0 : xq->GetHandle();
+
+    XQUEUE_TRACE("api=%s pid=" FMT_PID " tid=" FMT_TID
+                 " context=%p ctx_ret=%d device=%d dev_ret=%d stream=%p default_stream=%d "
+                 "auto_xqueue=%d auto_create_allowed=%d lookup_hwq=0x" FMT_64X
+                 " hwqueue=%p stream_to_xqueue=%p xqueue_id=0x" FMT_64X,
+                 api, GetProcessId(), GetThreadId(), ctx, (int)ctx_ret, (int)dev, (int)dev_ret,
+                 stream, is_default_stream ? 1 : 0, auto_enabled ? 1 : 0,
+                 auto_create ? 1 : 0, lookup_hwq, hwq.get(), xq.get(), xq_handle);
+
+    if (xq != nullptr) {
+        XQUEUE_TRACE("api=%s auto_create_attempted=0 reason=lookup_hit KernelLaunch.xqueue=%p",
+                     api, xq.get());
+        return xq;
+    }
+
+    if (!auto_create) {
+        XQUEUE_TRACE("api=%s auto_create_attempted=0 reason=auto_create_not_allowed "
+                     "KernelLaunch.xqueue=(nil)", api);
+        return nullptr;
+    }
+
+    if (!auto_enabled) {
+        XQUEUE_TRACE("api=%s auto_create_attempted=0 reason=auto_xqueue_disabled "
+                     "KernelLaunch.xqueue=(nil)", api);
+        return nullptr;
+    }
+
+    HwQueueHandle created_hwq = 0;
+    XResult create_res = XQueueManager::AutoCreate([&](HwQueueHandle *hwq_out) {
+        XResult res = CudaQueueCreate(hwq_out, stream);
+        if (hwq_out != nullptr) created_hwq = *hwq_out;
+        return res;
+    });
+
+    auto hwq_after = HwQueueManager::Get(lookup_hwq);
+    auto xq_after = hwq_after == nullptr ? nullptr : hwq_after->GetXQueue();
+    auto xq_by_created = created_hwq == 0 ? nullptr : HwQueueManager::GetXQueue(created_hwq);
+    const XQueueHandle xq_after_handle = xq_after == nullptr ? 0 : xq_after->GetHandle();
+    const bool key_match = created_hwq == lookup_hwq;
+
+    XQUEUE_TRACE("api=%s auto_create_attempted=1 create_result=%d created_hwq=0x" FMT_64X
+                 " lookup_hwq=0x" FMT_64X " created_key_match=%d hwqueue=%p "
+                 "stream_to_xqueue=%p xqueue_id=0x" FMT_64X " created_key_xqueue=%p",
+                 api, (int)create_res, created_hwq, lookup_hwq, key_match ? 1 : 0,
+                 hwq_after.get(), xq_after.get(), xq_after_handle, xq_by_created.get());
+
+    if (create_res == kXSchedSuccess && xq_after == nullptr) {
+        XQUEUE_TRACE("api=%s auto_create_diagnosis=%s", api,
+                     (!key_match && xq_by_created != nullptr)
+                         ? "created_success_lookup_key_mismatch"
+                         : "created_success_no_stream_mapping");
+    } else if (create_res != kXSchedSuccess) {
+        XQUEUE_TRACE("api=%s auto_create_diagnosis=auto_create_failed create_result=%d",
+                     api, (int)create_res);
+    }
+
+    return xq_after;
+}
 
 void WaitBlockingXQueues()
 {
@@ -78,7 +206,12 @@ CUresult XLaunchKernel(CUfunction f,
         WaitBlockingXQueues();
     }
 
-    auto xq = stream == nullptr ? nullptr : HwQueueManager::GetXQueue(GetHwQueueHandle(stream));
+    auto xq = ResolveXQueueForStream("cuLaunchKernel", stream);
+    const runtime::RuntimeStrategyMode mode = runtime::CurrentRuntimeStrategyMode();
+    XQUEUE_TRACE("api=cuLaunchKernel KernelLaunch.xqueue=%p xqueue_id=0x" FMT_64X
+                 " runtime_strategy=%s",
+                 xq.get(), xq == nullptr ? 0 : xq->GetHandle(),
+                 runtime::RuntimeStrategyModeName(mode));
     runtime::KernelLaunch launch{
         f, gdx, gdy, gdz, bdx, bdy, bdz, shmem, stream, params, extra, xq
     };
@@ -94,11 +227,9 @@ CUresult XLaunchKernelEx(const CUlaunchConfig *config, CUfunction f, void **para
 
     if (stream == nullptr) {
         WaitBlockingXQueues();
-        auto kernel = std::make_shared<CudaKernelLaunchExCommand>(config, f, params, extra, false);
-        return DirectLaunch(kernel, stream);
     }
-    
-    auto xq = HwQueueManager::GetXQueue(GetHwQueueHandle(stream));
+
+    auto xq = ResolveXQueueForStream("cuLaunchKernelEx", stream);
     auto kn = std::make_shared<CudaKernelLaunchExCommand>(config, f, params, extra, xq != nullptr);
 
     if (xq == nullptr) return DirectLaunch(kn, stream);
@@ -110,9 +241,8 @@ CUresult XLaunchHostFunc(CUstream stream, CUhostFn fn, void *data)
 {
     if (stream == 0) {
         WaitBlockingXQueues();
-        return Driver::LaunchHostFunc(stream, fn, data);
     }
-    auto xq = HwQueueManager::GetXQueue(GetHwQueueHandle(stream));
+    auto xq = ResolveXQueueForStream("cuLaunchHostFunc", stream);
     if (xq == nullptr) return Driver::LaunchHostFunc(stream, fn, data);
     auto hw_cmd = std::make_shared<CudaHostFuncCommand>(fn, data);
     xq->Submit(hw_cmd);
@@ -141,15 +271,14 @@ CUresult XEventRecord(CUevent event, CUstream stream)
 
     if (stream == nullptr) {
         WaitBlockingXQueues();
+    }
+
+    auto xq = ResolveXQueueForStream("cuEventRecord", stream);
+    if (xq == nullptr) {
         result = Driver::EventRecord(event, stream);
     } else {
-        auto xq = HwQueueManager::GetXQueue(GetHwQueueHandle(stream));
-        if (xq == nullptr) {
-            result = Driver::EventRecord(event, stream);
-        } else {
-            xq->Submit(xevent);
-            result = CUDA_SUCCESS;
-        }
+        xq->Submit(xevent);
+        result = CUDA_SUCCESS;
     }
 
     g_events.Add(event, xevent);
@@ -166,15 +295,14 @@ CUresult XEventRecordWithFlags(CUevent event, CUstream stream, unsigned int flag
 
     if (stream == nullptr) {
         WaitBlockingXQueues();
+    }
+
+    auto xq = ResolveXQueueForStream("cuEventRecordWithFlags", stream);
+    if (xq == nullptr) {
         result = Driver::EventRecordWithFlags(event, stream, flags);
     } else {
-        auto xq = HwQueueManager::GetXQueue(GetHwQueueHandle(stream));
-        if (xq == nullptr) {
-            result = Driver::EventRecordWithFlags(event, stream, flags);
-        } else {
-            xq->Submit(xevent);
-            result = CUDA_SUCCESS;
-        }
+        xq->Submit(xevent);
+        result = CUDA_SUCCESS;
     }
 
     g_events.Add(event, xevent);
@@ -205,11 +333,9 @@ CUresult XStreamWaitEvent(CUstream stream, CUevent event, unsigned int flags)
     if (stream == nullptr) {
         // sync a event on default stream
         WaitBlockingXQueues();
-        xevent->Wait();
-        return Driver::StreamWaitEvent(stream, event, flags);
     }
 
-    auto xq = HwQueueManager::GetXQueue(GetHwQueueHandle(stream));
+    auto xq = ResolveXQueueForStream("cuStreamWaitEvent", stream);
     if (xq == nullptr) {
         // waiting stream is not an xqueue
         if (xevent->GetXQueueHandle() == 0) {
@@ -257,7 +383,7 @@ CUresult XEventDestroy_v2(CUevent event)
 CUresult XStreamSynchronize(CUstream stream)
 {
     XDEBG("XStreamSynchronize(stream: %p)", stream);
-    auto xq = HwQueueManager::GetXQueue(GetHwQueueHandle(stream));
+    auto xq = ResolveXQueueForStream("cuStreamSynchronize", stream);
     if (xq == nullptr) return Driver::StreamSynchronize(stream);
     xq->WaitAll();
     return CUDA_SUCCESS;
@@ -266,8 +392,8 @@ CUresult XStreamSynchronize(CUstream stream)
 CUresult XStreamQuery(CUstream stream)
 {
     XDEBG("XStreamQuery(stream: %p)", stream);
-    auto xq = HwQueueManager::GetXQueue(GetHwQueueHandle(stream));
-    if (xq == nullptr) Driver::StreamQuery(stream);
+    auto xq = ResolveXQueueForStream("cuStreamQuery", stream, false);
+    if (xq == nullptr) return Driver::StreamQuery(stream);
 
     switch (xq->Query())
     {
@@ -290,7 +416,7 @@ CUresult XStreamCreate(CUstream *stream, unsigned int flags)
 {
     CUresult res = Driver::StreamCreate(stream, flags);
     if (res != CUDA_SUCCESS) return res;
-    XQueueManager::AutoCreate([&](HwQueueHandle *hwq) { return CudaQueueCreate(hwq, *stream); });
+    ResolveXQueueForStream("cuStreamCreate", *stream);
     XDEBG("XStreamCreate(stream: %p, flags: 0x%x)", *stream, flags);
     return res;
 }
@@ -299,7 +425,7 @@ CUresult XStreamCreateWithPriority(CUstream *stream, unsigned int flags, int pri
 {
     CUresult res = Driver::StreamCreateWithPriority(stream, flags, priority);
     if (res != CUDA_SUCCESS) return res;
-    XQueueManager::AutoCreate([&](HwQueueHandle *hwq) { return CudaQueueCreate(hwq, *stream); });
+    ResolveXQueueForStream("cuStreamCreateWithPriority", *stream);
     XDEBG("XStreamCreateWithPriority(stream: %p, flags: 0x%x, priority: %d)",
           *stream, flags, priority);
     return res;

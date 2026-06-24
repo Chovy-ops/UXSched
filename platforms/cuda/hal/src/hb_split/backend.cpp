@@ -505,21 +505,27 @@ ModuleInfo TransformModulePtx(const std::string &ptx)
 
     std::string transformed = ptx;
     for (const std::string &name : CollectEntryNames(ptx)) {
-        if (!wildcard && verified.find(name) == verified.end()) continue;
-
         KernelTransformRecord rec;
         rec.capability.ptx_available = true;
-        rec.capability.transform_attempted = true;
         rec.capability.supports_kernel_params = true;
         rec.capability.supports_extra = false;
-        rec.capability.fallback_reason = "TRANSFORM_NOT_ATTEMPTED";
+        rec.capability.fallback_reason = "KERNEL_NOT_VERIFIED";
 
-        const auto param_count = CountParamsForKernel(transformed, name);
+        const auto param_count = CountParamsForKernel(ptx, name);
         if (!param_count) {
             rec.capability.fallback_reason = "PARAM_COUNT_UNAVAILABLE";
             info.records[name] = rec;
             continue;
         }
+        rec.original_param_count = *param_count;
+
+        if (!wildcard && verified.find(name) == verified.end()) {
+            info.records[name] = rec;
+            continue;
+        }
+
+        rec.capability.transform_attempted = true;
+        rec.capability.fallback_reason = "TRANSFORM_NOT_ATTEMPTED";
 
         PtxTransformResult tr = TransformKernelPtx(transformed, name);
         rec.capability.transform_succeeded = tr.modified;
@@ -527,7 +533,6 @@ ModuleInfo TransformModulePtx(const std::string &ptx)
         rec.capability.supports_offset_y = tr.supports_offset_y;
         rec.capability.supports_offset_z = tr.supports_offset_z;
         rec.capability.cross_block_sync = tr.cross_block_sync;
-        rec.original_param_count = *param_count;
 
         if (tr.modified) {
             transformed = std::move(tr.ptx_text);
@@ -569,6 +574,10 @@ ModuleInfo TransformModulePtx(const std::string &ptx)
         return info;
     }
     info.transformed_module = transformed_module;
+    if (HbLogEnabled()) {
+        XINFO("[UXSCHED-HB] transformed_module_loaded transformed_module=%p records=%zu",
+              transformed_module, info.records.size());
+    }
     return info;
 }
 
@@ -724,7 +733,8 @@ bool SubmitSplitCommands(const FunctionInfo &info, Grid3D grid, Grid3D block,
 
     SetLpSplitThresholdOnce(xqueue);
 
-    for (const SplitSpec &split : splits) {
+    for (size_t child_idx = 0; child_idx < splits.size(); ++child_idx) {
+        const SplitSpec &split = splits[child_idx];
         std::vector<void *> params;
         params.reserve(info.original_param_count + kOffsetParamCount);
         for (size_t i = 0; i < info.original_param_count; ++i) params.push_back(kernel_params[i]);
@@ -736,12 +746,19 @@ bool SubmitSplitCommands(const FunctionInfo &info, Grid3D grid, Grid3D block,
         auto cmd = std::make_shared<CudaKernelLaunchCommand>(
             info.transformed_function, split.grid.x, split.grid.y, split.grid.z,
             block.x, block.y, block.z, shared_mem_bytes, params.data(), nullptr, true);
-        cmd->AddStateListener([group](preempt::XCommandState state) {
+        cmd->AddStateListener([group, child_idx](preempt::XCommandState state) {
             if (state < preempt::kCommandStateCompleted) return;
+            if (HbLogEnabled()) {
+                XINFO("[UXSCHED-HB] child_launch_completed function=%s child_index=%zu "
+                      "split_count=%zu",
+                      group->kernel_name.c_str(), child_idx, group->split_count);
+            }
             const size_t done = group->completed.fetch_add(1) + 1;
             if (done == group->split_count) {
                 if (HbLogEnabled()) {
                     XINFO("[UXSCHED-HB] split_group_completed function=%s split_count=%zu",
+                          group->kernel_name.c_str(), group->split_count);
+                    XINFO("[UXSCHED-HB] parent_launch_completed function=%s split_count=%zu",
                           group->kernel_name.c_str(), group->split_count);
                 }
                 group->children.clear();
@@ -756,9 +773,25 @@ bool SubmitSplitCommands(const FunctionInfo &info, Grid3D grid, Grid3D block,
               "backend_selected=HB_SPLIT stream=%p",
               info.kernel_name.c_str(), CurrentPriority(), grid.x, grid.y, grid.z,
               SplitBlocks(), splits.size(), stream);
+        XINFO("[UXSCHED-HB] parent_launch_submitted function=%s split_count=%zu "
+              "transformed_function=%p xqueue=0x" FMT_64X " stream=%p",
+              info.kernel_name.c_str(), splits.size(), info.transformed_function,
+              xqueue == nullptr ? 0 : xqueue->GetHandle(), stream);
     }
 
-    for (auto &cmd : group->children) xqueue->Submit(cmd);
+    for (size_t child_idx = 0; child_idx < group->children.size(); ++child_idx) {
+        const SplitSpec &split = splits[child_idx];
+        if (HbLogEnabled()) {
+            XINFO("[UXSCHED-HB] child_launch_submitted function=%s child_index=%zu "
+                  "split_count=%zu transformed_function=%p grid=(%u,%u,%u) "
+                  "offset=(%u,%u,%u) xqueue=0x" FMT_64X " stream=%p",
+                  info.kernel_name.c_str(), child_idx, group->split_count,
+                  info.transformed_function, split.grid.x, split.grid.y, split.grid.z,
+                  split.offset[0], split.offset[1], split.offset[2],
+                  xqueue == nullptr ? 0 : xqueue->GetHandle(), stream);
+        }
+        xqueue->Submit(group->children[child_idx]);
+    }
     if (result != nullptr) *result = CUDA_SUCCESS;
     return true;
 }
@@ -864,7 +897,7 @@ CUresult XModuleGetFunction(CUfunction *function, CUmodule module, const char *n
     if (ret != CUDA_SUCCESS || function == nullptr || *function == nullptr || name == nullptr) return ret;
 
     auto module_info = FindModuleInfo(module);
-    if (!module_info || module_info->transformed_module == nullptr) return ret;
+    if (!module_info) return ret;
 
     auto rec_it = module_info->records.find(name);
     if (rec_it == module_info->records.end()) return ret;
@@ -876,7 +909,7 @@ CUresult XModuleGetFunction(CUfunction *function, CUmodule module, const char *n
     info.original_module = module;
     info.original_function = *function;
 
-    if (info.capability.transform_succeeded) {
+    if (info.capability.transform_succeeded && module_info->transformed_module != nullptr) {
         CUfunction transformed = nullptr;
         CUresult hidden_ret = Driver::ModuleGetFunction(&transformed, module_info->transformed_module, name);
         if (hidden_ret == CUDA_SUCCESS && transformed != nullptr) {
@@ -885,6 +918,9 @@ CUresult XModuleGetFunction(CUfunction *function, CUmodule module, const char *n
             info.capability.splittable = false;
             info.capability.fallback_reason = "TRANSFORMED_FUNCTION_NOT_FOUND";
         }
+    } else if (info.capability.transform_succeeded) {
+        info.capability.splittable = false;
+        info.capability.fallback_reason = "TRANSFORMED_MODULE_UNAVAILABLE";
     }
 
     std::lock_guard<std::mutex> lock(g_mu);

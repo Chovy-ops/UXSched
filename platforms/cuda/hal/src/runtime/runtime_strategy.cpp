@@ -18,6 +18,14 @@ namespace xsched::cuda::runtime
 namespace
 {
 
+bool XQueueTraceEnabled()
+{
+    const char *env = std::getenv("UXSCHED_XQUEUE_TRACE");
+    if (env == nullptr || env[0] == '\0') return false;
+    return std::strcmp(env, "0") != 0 && strcasecmp(env, "off") != 0 &&
+           strcasecmp(env, "false") != 0 && strcasecmp(env, "no") != 0;
+}
+
 bool BuildHasHbSplit()
 {
 #ifdef UXSCHED_ENABLE_HB_SPLIT
@@ -154,8 +162,20 @@ SubmitResult SubmitKernelWithRuntimeStrategy(const KernelLaunch &launch)
     }
 
     HummingbirdRuntimeStrategy hb(mode);
+    if (XQueueTraceEnabled()) {
+        XINFO("[UXSCHED-XQUEUE] runtime_strategy_enter mode=%s stream=%p "
+              "KernelLaunch.xqueue=%p",
+              RuntimeStrategyModeName(mode), launch.stream, launch.xqueue.get());
+    }
     SubmitResult hb_result = hb.SubmitKernel(launch);
     if (hb_result.status == SubmitStatus::kSubmitted) return hb_result;
+
+    if (XQueueTraceEnabled()) {
+        XINFO("[UXSCHED-XQUEUE] runtime_strategy_fallback mode=%s reason=%s "
+              "KernelLaunch.xqueue=%p",
+              RuntimeStrategyModeName(mode), hb_result.fallback_reason.c_str(),
+              launch.xqueue.get());
+    }
 
     NativeRuntimeStrategy native;
     return native.SubmitKernel(launch);

@@ -94,45 +94,75 @@ build-native/service/xcli
 
 ## 2. Runtime Results
 
-2026-06-24 Gate 1 smoke was attempted with:
+2026-06-24 manual Gate 1 smoke result directory:
 
-```bash
-bash tools/run_hb_gate1_smoke.sh --output-dir results/hb_gate1_20260624_162217
+```text
+results/hb_gate1_manual_20260624_163059
 ```
-
-The current Codex tool session did not have GPU access. Fresh checks showed
-`/dev/dxg` was not visible, `nvidia-smi` reported GPU access blocked by the
-operating system, and `torch.cuda.is_available()` returned `False`.
 
 Artifact status:
 
 | Case | Result |
 | --- | --- |
-| Native open_resnet_like LP | BLOCKED: `cuda_available=false` |
-| UXSched `NATIVE` LP | BLOCKED: `cuda_available=false` |
-| UXSched `HB_FIXED` LP | BLOCKED: `cuda_available=false` |
-| UXSched `HB_FIXED` HP passthrough probe | BLOCKED: `cuda_available=false` |
-| UXSched `HB_FIXED` unverified-kernel fallback probe | BLOCKED: `cuda_available=false` |
-| Event-boundary sync probe | BLOCKED: `cuda_available=false` |
+| Native open_resnet_like LP | RAN on RTX 5060 |
+| UXSched `NATIVE` LP | RAN with UXSched shim loaded |
+| UXSched `HB_FIXED` LP | FAILED/PARTIAL: PTX transformed, launches fell back `NO_XQUEUE` |
+| UXSched `HB_FIXED` HP passthrough probe | RAN: `HIGH_PRIORITY_PASSTHROUGH` |
+| UXSched `HB_FIXED` unverified-kernel fallback probe | RAN, but old code reported `<unknown>/PTX_UNAVAILABLE`; fixed code must rerun |
+| Event-boundary sync probe | RAN workload-internal split counters only; no UXSched split trace |
 | xserver HPF | Started, accepted clients, stopped |
 
 No benchmark numbers are claimed in this document.
 
 Observed evidence:
 
-- checksum: not observed;
-- split trace: not observed;
-- transformed CUfunction launch evidence: not observed;
+- `transform_succeeded` appeared for open_resnet_like kernels;
+- `backend_selected=NATIVE reason=NO_XQUEUE` appeared on LP launches;
+- transformed CUfunction child launch evidence: not observed;
 - child completion evidence: not observed;
-- parent completion: no-CUDA marker only;
-- Global Lv1 HPF smoke: not run because single-process GPU execution did not
-  pass.
+- workload fields `lp_split_launched` and `fixed_split_blocks` are workload
+  internal counters and are not UXSched backend split evidence;
+- Global Lv1 HPF smoke: not run because single-process HB_FIXED split execution
+  did not pass.
+
+2026-06-24 NO_XQUEUE fix:
+
+```text
+COMPILE VERIFIED only; manual GPU rerun still required.
+```
+
+Implemented after the manual result:
+
+- launch-time auto-association from CUDA stream to stable XQueue when
+  `XSCHED_AUTO_XQUEUE=ON`;
+- default stream support through a per-context synthetic HwQueue handle;
+- `UXSCHED_XQUEUE_TRACE=1` logs for API, pid/tid, CUDA context, stream handle,
+  default-stream flag, auto-create attempt/result, HwQueue/XQueue pointers,
+  lookup result, `KernelLaunch.xqueue`, runtime strategy, and fallback path;
+- `KERNEL_NOT_VERIFIED` fallback metadata for PTX entries that are present but
+  excluded by the verified kernel list;
+- explicit `transformed_module_loaded`, `parent_launch_submitted`,
+  `child_launch_submitted`, `child_launch_completed`, and
+  `parent_launch_completed` logs;
+- minimal Driver API probe for default and explicit streams:
+  `tools/hb_xqueue_probe.cpp`.
+
+Build checks after this fix:
+
+```bash
+tools/build_hb_xqueue_probe.sh build-hb/hb_xqueue_probe
+cmake --build build-hb --target halcuda shimcuda -j2
+cmake --build build-native --target halcuda shimcuda -j2
+bash -n tools/run_hb_gate1_smoke.sh tools/build_hb_xqueue_probe.sh
+```
 
 Pending runtime checks:
 
+- minimal HB_FIXED LP default-stream probe;
+- minimal HB_FIXED LP explicit-stream probe;
 - open_resnet_like HP passthrough;
 - open_resnet_like LP split count and checksum;
-- fallback for unsupported/non-PTX kernels;
+- separate `PTX_UNAVAILABLE` and `KERNEL_NOT_VERIFIED` fallback cases;
 - event and stream synchronization after split groups;
 - Global Scheduler / HPF end-to-end latency and throughput measurements.
 
