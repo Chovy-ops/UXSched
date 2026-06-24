@@ -1,3 +1,6 @@
+#include <chrono>
+#include <cstdlib>
+
 #include "xsched/utils/xassert.h"
 #include "xsched/preempt/sched/agent.h"
 #include "xsched/preempt/xqueue/xqueue.h"
@@ -5,6 +8,7 @@
 
 using namespace xsched::sched;
 using namespace xsched::preempt;
+using namespace std::chrono;
 
 AsyncXQueue::AsyncXQueue(std::shared_ptr<HwQueue> hwq, XPreemptLevel level,
                          int64_t threshold, int64_t batch_size)
@@ -89,6 +93,11 @@ int64_t AsyncXQueue::GetHwCommandCount()
 
 void AsyncXQueue::Suspend(int64_t flags)
 {
+    const char *profile_suspend = std::getenv("XSCHED_PROFILE_SUSPEND");
+    const bool profile = profile_suspend != nullptr && profile_suspend[0] != '\0'
+        && profile_suspend[0] != '0';
+    auto start = steady_clock::now();
+
     // If the XQueue is already terminated, it should not be suspended.
     if (terminated_.load()) return;
 
@@ -101,6 +110,13 @@ void AsyncXQueue::Suspend(int64_t flags)
     if (level_ >= kPreemptLevelDeactivate) kHwQueue->Deactivate();
     if (level_ >= kPreemptLevelInterrupt)  kHwQueue->Interrupt();
     if (flags & kQueueSuspendFlagSyncHwQueue) kHwQueue->Synchronize();
+
+    if (profile) {
+        auto elapsed_us = duration_cast<microseconds>(steady_clock::now() - start).count();
+        XINFO("[XSCHED_PROFILE] suspend_us=%ld xq=0x" FMT_64X " level=%d flags=0x" FMT_64X
+              " hw_cmd_count=" FMT_64D,
+              elapsed_us, kHandle, level_, flags, GetHwCommandCount());
+    }
 }
 
 void AsyncXQueue::Resume(int64_t flags)

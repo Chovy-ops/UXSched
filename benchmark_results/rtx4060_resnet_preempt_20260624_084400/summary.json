@@ -1,0 +1,34 @@
+[
+  {
+    "role": "lp",
+    "workload": "train",
+    "index": 0,
+    "priority": 0,
+    "pid": 22884,
+    "start_elapsed_s": 0.001,
+    "first_thpt_elapsed_s": 3.212,
+    "first_thpt_delay_s": 3.211,
+    "samples": 710,
+    "unit": "samples/s",
+    "avg_throughput": 355.907,
+    "last_throughput": 167.41,
+    "peak_throughput": 465.05,
+    "returncode": -2
+  },
+  {
+    "role": "hp",
+    "workload": "cnn",
+    "index": 0,
+    "priority": 1,
+    "pid": 23308,
+    "start_elapsed_s": 35.502,
+    "first_thpt_elapsed_s": 40.464,
+    "first_thpt_delay_s": 4.962,
+    "samples": 143,
+    "unit": "samples/s",
+    "avg_throughput": 225.184,
+    "last_throughput": 562.18,
+    "peak_throughput": 570.2,
+    "returncode": -2
+  }
+]

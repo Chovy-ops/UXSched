@@ -1,0 +1,14 @@
+{
+  "scenario": "alone",
+  "foreground_samples": 300,
+  "foreground_batch_size": 32,
+  "latency_avg_ms": 60.494,
+  "latency_p50_ms": 57.448,
+  "latency_p95_ms": 74.457,
+  "latency_p99_ms": 80.885,
+  "latency_min_ms": 56.204,
+  "latency_max_ms": 82.37,
+  "foreground_returncode": 0,
+  "background_pid": null,
+  "background_returncode": null
+}

@@ -66,6 +66,7 @@ static const std::map<XPolicyType, std::string> &PolicyNames() {
         // NEW_POLICY: New policy type names go here.
         { kPolicyCompletelyFairScheduler          , XSCHED_POLICY_NAME_CFS},
         { kPolicyMultiLevelFeedbackQueue          , XSCHED_POLICY_NAME_MLFQ},
+        { kPolicySLOAdaptive                      , XSCHED_POLICY_NAME_SLO },
     };
     return kPolicyNames;
 }

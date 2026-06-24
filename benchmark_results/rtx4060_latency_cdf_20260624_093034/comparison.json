@@ -1,0 +1,53 @@
+[
+  {
+    "scenario": "alone",
+    "foreground_samples": 300,
+    "foreground_batch_size": 32,
+    "latency_avg_ms": 59.07,
+    "latency_p50_ms": 57.68,
+    "latency_p95_ms": 66.899,
+    "latency_p99_ms": 70.586,
+    "latency_min_ms": 56.521,
+    "latency_max_ms": 72.934,
+    "foreground_returncode": 0,
+    "background_pid": null,
+    "background_returncode": null,
+    "p50_slowdown_vs_alone": 1.0,
+    "p95_slowdown_vs_alone": 1.0,
+    "p99_slowdown_vs_alone": 1.0
+  },
+  {
+    "scenario": "native",
+    "foreground_samples": 300,
+    "foreground_batch_size": 32,
+    "latency_avg_ms": 146.979,
+    "latency_p50_ms": 146.0,
+    "latency_p95_ms": 160.422,
+    "latency_p99_ms": 162.092,
+    "latency_min_ms": 142.879,
+    "latency_max_ms": 162.427,
+    "foreground_returncode": 0,
+    "background_pid": 19929,
+    "background_returncode": -2,
+    "p50_slowdown_vs_alone": 2.531,
+    "p95_slowdown_vs_alone": 2.398,
+    "p99_slowdown_vs_alone": 2.296
+  },
+  {
+    "scenario": "xsched",
+    "foreground_samples": 300,
+    "foreground_batch_size": 32,
+    "latency_avg_ms": 66.142,
+    "latency_p50_ms": 65.26,
+    "latency_p95_ms": 68.636,
+    "latency_p99_ms": 76.885,
+    "latency_min_ms": 58.502,
+    "latency_max_ms": 343.331,
+    "foreground_returncode": 0,
+    "background_pid": 20777,
+    "background_returncode": -2,
+    "p50_slowdown_vs_alone": 1.131,
+    "p95_slowdown_vs_alone": 1.026,
+    "p99_slowdown_vs_alone": 1.089
+  }
+]

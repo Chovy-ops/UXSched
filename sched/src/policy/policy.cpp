@@ -15,6 +15,7 @@
 // NEW_POLICY: New policy headers go here.
 #include "xsched/sched/policy/cfs.h"
 #include "xsched/sched/policy/mlfq.h"
+#include "xsched/sched/policy/slo.h"
 
 using namespace xsched::sched;
 
@@ -62,6 +63,8 @@ std::unique_ptr<Policy> xsched::sched::CreatePolicy(XPolicyType type)
             return std::make_unique<CompletelyFairSchedulerPolicy>();
         case kPolicyMultiLevelFeedbackQueue:
             return std::make_unique<MultiLevelFeedbackQueuePolicy>();
+        case kPolicySLOAdaptive:
+            return std::make_unique<SLOAdaptivePolicy>();
         default:
             XASSERT(false, "invalid policy type: %d", type);
             return nullptr;

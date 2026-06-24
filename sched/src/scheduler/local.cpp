@@ -108,14 +108,20 @@ void LocalScheduler::Worker()
                 continue;
             }
             this->UpdateStatus(event);
+            if (event->Type() == kEventXQueueReady) this->Reschedule();
         }
 
-        policy_->Sched(status_);    // reschedule
-        this->ExecuteOperations();  // find changes and execute
+        this->Reschedule();
         std::sort(timers_.begin(), timers_.end());
         if (terminate) return;
         lock.lock();
     }
+}
+
+void LocalScheduler::Reschedule()
+{
+    policy_->Sched(status_);
+    this->ExecuteOperations();
 }
 
 void LocalScheduler::ExecuteOperations()

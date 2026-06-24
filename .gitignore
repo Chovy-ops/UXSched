@@ -1,9 +1,13 @@
 .cache
 .vscode
+.agents
+.codex
 .DS_Store
 
 data
 build
+build_ascend
+build_cuda_test
 output
 cache
 nc_workspace

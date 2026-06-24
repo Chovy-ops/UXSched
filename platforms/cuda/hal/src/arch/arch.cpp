@@ -30,6 +30,7 @@ std::shared_ptr<Guardian> Guardian::Instance(CUdevice dev)
     case 70:
         return std::make_shared<GuardianSM70>();
     case 86:
+    case 89:
         return std::make_shared<GuardianSM86>();
     // NEW_CUDA_ARCH: New CUDA architecture support goes here
     default:
@@ -43,6 +44,7 @@ std::shared_ptr<TarpHandler> TarpHandler::Instance(CUdevice dev)
     case 70:
         return std::make_shared<TarpHandlerSM70>();
     case 86:
+    case 89:
         return std::make_shared<TarpHandlerSM86>();
     // NEW_CUDA_ARCH: New CUDA architecture support goes here
     default:
@@ -75,6 +77,7 @@ std::shared_ptr<HwQueue> xsched::cuda::CudaQueueCreate(CUstream stream)
         return std::make_shared<CudaQueueLv2>(stream);
     case 70: // Volta: V100, GV100
     case 86: // Ampere: RTX3050 - RTX 3090 Ti
+    case 89: // Ada: RTX 40 series. Reuse the SM86 DBI path for Lv2/Lv3.
         return std::make_shared<CudaQueueLv3Trap>(stream);
     // NEW_CUDA_ARCH: New CUDA architecture support goes here
     default:
@@ -107,6 +110,7 @@ CUresult xsched::cuda::DirectLaunch(std::shared_ptr<CudaKernelCommand> kernel, C
         return CudaQueueLv2::DirectLaunch(kernel, current_ctx, stream);
     case 70:
     case 86:
+    case 89:
         return CudaQueueLv3Trap::DirectLaunch(kernel, current_ctx, stream);
     // NEW_CUDA_ARCH: New CUDA architecture support goes here
     default:

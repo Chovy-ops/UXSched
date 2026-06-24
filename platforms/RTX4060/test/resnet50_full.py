@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""ResNet152 full benchmark for NVIDIA GPU + XSched transparent scheduling.
+"""ResNet50 full benchmark for CUDA GPU + XSched transparent scheduling.
 
-Compared to resnet152.py:
+This is a GPU-model-agnostic variant of resnet152_full.py:
   - Uses a dedicated torch.cuda.Stream by default so kernels go through XQueue
-    (required for GLB/HPF Suspend-Resume; default stream bypasses the shim).
+    when the CUDA shim is enabled.
   - Prints device / XSched env / stream mode.
-  - Supports per-round thpt loop (ascend-style) or per-task timing.
+  - Supports per-round throughput loop or per-task latency timing.
 
 Example (high priority, with xserver HPF running):
   export XSCHED_SCHEDULER=GLB XSCHED_AUTO_XQUEUE=ON XSCHED_AUTO_XQUEUE_PRIORITY=1
   export LD_LIBRARY_PATH=/path/to/xsched/output/lib:$LD_LIBRARY_PATH
-  export XSCHED_CUDA_LIB=/usr/lib/wsl/lib/libcuda.so.1
-  export CUXTRA_CUDA_LIB=/usr/lib/wsl/lib/libcuda.so.1
-  python3 platforms/RTX4060/test/resnet152_full.py -c 10
+  export XSCHED_CUDA_LIB=/path/to/real/libcuda.so.1
+  export CUXTRA_CUDA_LIB=/path/to/real/libcuda.so.1
+  python3 platforms/RTX4060/test/resnet50_full.py -c 10
 """
 
 from __future__ import annotations
@@ -31,10 +31,10 @@ DEFAULT_IMAGE_SIZE = 224
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="ResNet152 inference on NVIDIA GPU (RTX4060, XSched-ready)"
+        description="ResNet50 inference on CUDA GPU (XSched-ready)"
     )
     p.add_argument("-c", "--run-cnt", type=int, default=10,
-                   help="Inferences per thpt round in loop mode (default: 10)")
+                   help="Inferences per throughput round in loop mode (default: 10)")
     p.add_argument("--gpu", type=int, default=0, help="CUDA device index (default: 0)")
     p.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE,
                    help=f"Batch size (default: {DEFAULT_BATCH_SIZE})")
@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--per-task",
         action="store_true",
-        help="Print per-task latency instead of infinite thpt loop",
+        help="Print per-task latency instead of infinite throughput loop",
     )
     p.add_argument(
         "--num-tasks",
@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--no-dedicated-stream",
         action="store_true",
-        help="Use default stream (XSched scheduling will NOT apply to kernels)",
+        help="Use default stream (XSched scheduling may not apply to kernels)",
     )
     return p.parse_args()
 
@@ -80,7 +80,7 @@ def infer_on_gpu(
     data: torch.Tensor,
     stream: torch.cuda.Stream | None,
 ) -> None:
-    """Forward on GPU only. Avoid .cpu() in the hot path (D2H often uses default stream)."""
+    """Forward on GPU only. Avoid .cpu() in the hot path."""
     with torch.no_grad():
         if stream is not None:
             with torch.cuda.stream(stream):
@@ -167,9 +167,9 @@ def main() -> None:
         print(f"Real libcuda: {cuda_lib}")
     else:
         print(
-            "WARN: set XSCHED_CUDA_LIB and CUXTRA_CUDA_LIB to real driver, e.g.\n"
-            "  export XSCHED_CUDA_LIB=/usr/lib/wsl/lib/libcuda.so.1\n"
-            "  export CUXTRA_CUDA_LIB=/usr/lib/wsl/lib/libcuda.so.1"
+            "WARN: set XSCHED_CUDA_LIB and CUXTRA_CUDA_LIB to the real driver, e.g.\n"
+            "  export XSCHED_CUDA_LIB=/usr/lib/x86_64-linux-gnu/libcuda.so.1\n"
+            "  export CUXTRA_CUDA_LIB=/usr/lib/x86_64-linux-gnu/libcuda.so.1"
         )
 
     stream: torch.cuda.Stream | None = None
@@ -178,14 +178,14 @@ def main() -> None:
         torch.cuda.set_stream(stream)
 
     print(
-        f"Config: model=ResNet152, batch={args.batch_size}, "
+        f"Config: model=ResNet50, batch={args.batch_size}, "
         f"size={args.image_size}x{args.image_size}, "
         f"stream={'dedicated' if stream else 'default (no XSched on kernels)'}"
     )
 
-    print("Loading ResNet152...")
-    model = torchvision.models.resnet152(
-        weights=torchvision.models.ResNet152_Weights.DEFAULT
+    print("Loading ResNet50...")
+    model = torchvision.models.resnet50(
+        weights=torchvision.models.ResNet50_Weights.DEFAULT
     )
     model.eval().to(device)
 

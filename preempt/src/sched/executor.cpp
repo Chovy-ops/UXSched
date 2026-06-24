@@ -1,4 +1,5 @@
 #include <memory>
+#include <cstdlib>
 
 #include "xsched/xqueue.h"
 #include "xsched/utils/xassert.h"
@@ -53,7 +54,12 @@ void SchedExecutor::ExecuteSchedOperation(std::shared_ptr<const sched::SchedOper
     }
     for (size_t i = 0; i < suspended_cnt; ++i) {
         std::shared_ptr<XQueue> xq_shptr = XQueueManager::Get(handles[running_cnt + i]);
-        if (xq_shptr != nullptr) xq_shptr->Suspend(kQueueSuspendFlagNone);
+        int64_t flags = kQueueSuspendFlagNone;
+        const char *sync_suspend = std::getenv("XSCHED_SYNC_SUSPEND");
+        if (sync_suspend != nullptr && sync_suspend[0] != '\0' && sync_suspend[0] != '0') {
+            flags |= kQueueSuspendFlagSyncHwQueue;
+        }
+        if (xq_shptr != nullptr) xq_shptr->Suspend(flags);
     }
 }
 

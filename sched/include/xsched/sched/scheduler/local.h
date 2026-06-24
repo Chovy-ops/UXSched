@@ -31,6 +31,7 @@ public:
 
 private:
     void Worker();
+    void Reschedule();
     void ExecuteOperations();
     void CreateXQueueStatus(PID pid, const std::string &cmdline, XQueueHandle handle, XDevice dev,
                             XPreemptLevel level, int64_t threshold, int64_t batch_size,

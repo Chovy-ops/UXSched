@@ -266,7 +266,7 @@ public:
     DEFINE_STATIC_ADDRESS_CALL(GetSymbol("cuEventSynchronize"), CUresult, EventSynchronize, CUevent, hEvent);
     DEFINE_STATIC_ADDRESS_CALL(GetSymbol("cuEventDestroy_v2"), CUresult, EventDestroy_v2, CUevent, hEvent);
     DEFINE_STATIC_ADDRESS_CALL(GetSymbol("cuEventElapsedTime"), CUresult, EventElapsedTime, float *, pMilliseconds, CUevent, hStart, CUevent, hEnd);
-    DEFINE_STATIC_ADDRESS_CALL(GetSymbol("cuEventElapsedTime_v2"), CUresult, EventElapsedTime_v2, float *, pMilliseconds, CUevent, hStart, CUevent, hEnd);
+    DEFINE_STATIC_REDIRECT_CALL(EventElapsedTime, CUresult, EventElapsedTime_v2, float *, pMilliseconds, CUevent, hStart, CUevent, hEnd);
     DEFINE_STATIC_ADDRESS_CALL(GetSymbol("cuImportExternalMemory"), CUresult, ImportExternalMemory, CUexternalMemory *, extMem_out, const CUDA_EXTERNAL_MEMORY_HANDLE_DESC *, memHandleDesc);
     DEFINE_STATIC_ADDRESS_CALL(GetSymbol("cuExternalMemoryGetMappedBuffer"), CUresult, ExternalMemoryGetMappedBuffer, CUdeviceptr *, devPtr, CUexternalMemory, extMem, const CUDA_EXTERNAL_MEMORY_BUFFER_DESC *, bufferDesc);
     DEFINE_STATIC_ADDRESS_CALL(GetSymbol("cuExternalMemoryGetMappedMipmappedArray"), CUresult, ExternalMemoryGetMappedMipmappedArray, CUmipmappedArray *, mipmap, CUexternalMemory, extMem, const CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC *, mipmapDesc);

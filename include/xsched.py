@@ -121,7 +121,7 @@ class XSched:
     __lax_ctype    = ctypes.c_int64
     __ddl_ctype    = ctypes.c_int64
 
-    try:
+    c
         __dll = ctypes.cdll.LoadLibrary("libpreempt.so")
 
         # XQueue functions

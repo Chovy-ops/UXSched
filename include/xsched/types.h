@@ -110,6 +110,7 @@ typedef enum {
     // NEW_POLICY: New XPolicyTypes go here.
     kPolicyCompletelyFairScheduler           = 9,
     kPolicyMultiLevelFeedbackQueue           = 10,
+    kPolicySLOAdaptive                       = 11,
 
     kPolicyMax,
 } XPolicyType;
