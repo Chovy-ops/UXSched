@@ -21,7 +21,7 @@ Allowed status values in this file:
 | `NativeRuntimeStrategy` | COMPILE VERIFIED | Preserves original `CudaKernelLaunchCommand` path. |
 | `HummingbirdRuntimeStrategy` | COMPILE VERIFIED | `HB_FIXED` delegates to fixed split implementation. |
 | `UXSCHED_CUDA_RUNTIME_STRATEGY=NATIVE` | COMPILE VERIFIED | Runtime tests not run. |
-| `UXSCHED_CUDA_RUNTIME_STRATEGY=HB_FIXED` | FAILED | Manual GPU Gate 1 reached PTX transform but fell back with `NO_XQUEUE`; code fix is compile verified and pending manual rerun. |
+| `UXSCHED_CUDA_RUNTIME_STRATEGY=HB_FIXED` | RUNTIME VERIFIED | Manual GPU result `results/hb_gate1_after_xqueue_fix_20260624_170107` observed transformed module load, 78 parent launches, 312 transformed child launches, fallback count 0, and `NO_XQUEUE` count 0. Correctness and synchronization Gate 1 checks are still pending rerun. |
 | `UXSCHED_CUDA_RUNTIME_STRATEGY=HB_RUNTIME` | IMPLEMENTED | Explicit Native fallback: runtime not implemented yet. |
 | `UXSCHED_CUDA_RUNTIME_STRATEGY=AUTO` | IMPLEMENTED | Explicit Native fallback: coordinator unavailable. |
 | Per-device HB coordinator | BLOCKED | Not implemented. |
@@ -31,11 +31,11 @@ Allowed status values in this file:
 | small bubble hints | BLOCKED | Not implemented. |
 | large bubble / consolidation | BLOCKED | Not implemented. |
 | GPU visibility | RUNTIME VERIFIED | User manual WSL Gate 1 run used RTX 5060 and recorded `cuda_available=true`; do not reuse earlier Codex tool-session GPU blocker as current status. |
-| open_resnet_like GPU validation | FAILED | Native and UXSched Native ran; HB_FIXED LP did not split because `KernelLaunch.xqueue` was null. |
-| CUDA stream to XQueue association fix | COMPILE VERIFIED | Adds launch-time auto-association, default-stream synthetic context handle, and `UXSCHED_XQUEUE_TRACE=1`; pending manual GPU rerun. |
+| open_resnet_like GPU validation | FAILED | Native and UXSched split launch evidence exists, but prior non-correctness UXSched open_resnet_like cases returned 139 and did not provide checksum/hash evidence. Gate 1 now requires correctness-mode rerun. |
+| CUDA stream to XQueue association fix | RUNTIME VERIFIED | Default-stream and explicit-stream Driver API probes both reached `HB_SPLIT` with transformed child launches and `NO_XQUEUE=0` in `results/hb_gate1_after_xqueue_fix_20260624_170107`. |
 | CUTLASS workload | BLOCKED | Must wait until Gate 8. |
 | Persistent agent rules | IMPLEMENTED | Added `AGENTS.md` with UXSched-Hummingbird integration rules. |
-| Gate 1 smoke runner | IMPLEMENTED | `tools/run_hb_gate1_smoke.sh` records per-case artifacts and xserver logs. |
+| Gate 1 smoke runner | IMPLEMENTED | `tools/run_hb_gate1_smoke.sh` now records correctness, sync, HP passthrough, fallback artifacts, and writes `gate1_summary.env`; GPU rerun is required. |
 
 ## Completed
 
@@ -82,11 +82,18 @@ Allowed status values in this file:
 - Added PTX-present unverified-kernel metadata so that fallback can report
   `KERNEL_NOT_VERIFIED`.
 - Added minimal Driver API XQueue probe under `tools/hb_xqueue_probe.cpp`.
+- Extended the Driver API probe with event, stream, context, same-stream
+  ordering, and parent-completion synchronization modes.
 - Built `halcuda` and `shimcuda` with HB enabled.
 - Built `halcuda` and `shimcuda` with default HB disabled.
 - Updated `tools/run_hb_gate1_smoke.sh` to preserve Gate 1 smoke artifacts,
   split UXSched backend stats from workload-internal split stats, and run
   default/explicit stream probes.
+- Updated `tools/run_hb_gate1_smoke.sh` to run three correctness-mode cases
+  (`native_correctness`, `uxsched_native_correctness`,
+  `uxsched_hb_fixed_correctness`), five HB_FIXED synchronization probes, HP
+  passthrough, separate `PTX_UNAVAILABLE` and `KERNEL_NOT_VERIFIED` fallback
+  probes, and a final `gate1_summary.env`.
 - Built `xserver` and `xcli` in both `build-hb` and `build-native`.
 
 ## Partially Completed
@@ -99,8 +106,9 @@ Allowed status values in this file:
 - Multi-dimensional grid splitting is implemented, but runtime validation has
   not been run on real GPU workloads yet.
 - `cuLaunchKernelEx` remains native in stage 1.
-- Manual Gate 1 is PARTIAL/FAILED until the user reruns and observes real
-  transformed child launches plus checksum/output-hash equality.
+- Manual Gate 1 remains FAILED until the user reruns the updated runner and
+  observes checksum/output-hash/element-count equality plus all synchronization
+  pass fields in `gate1_summary.env`.
 
 ## Not Completed
 
@@ -187,6 +195,37 @@ Allowed status values in this file:
 - Not run in Codex tool environment: GPU runtime validation.
 - Required next task: user manual rerun of the minimal HB_FIXED LP probe and
   correctness-mode checksum/output-hash comparison.
+
+2026-06-24 Gate 1 correctness/synchronization runner update:
+
+- Read real GPU result directory `results/hb_gate1_after_xqueue_fix_20260624_170107`.
+- Confirmed from artifacts:
+  - `probe_default_stream_hb_fixed_lp`: transformed child launches and
+    `NO_XQUEUE=0`;
+  - `probe_explicit_stream_hb_fixed_lp`: transformed child launches and
+    `NO_XQUEUE=0`;
+  - `uxsched_hb_fixed_lp`: `uxsched_hb_transform_count=4`,
+    `uxsched_hb_parent_launch_count=78`,
+    `uxsched_hb_child_launch_count=312`,
+    `uxsched_hb_transformed_launch_count=312`,
+    `uxsched_hb_fallback_count=0`,
+    `uxsched_hb_no_xqueue_count=0`.
+- Existing `sync_event_boundary_probe` is not valid Gate 1 sync evidence:
+  it had UXSched transform/child/parent counts all zero and only workload
+  internal `fixed_split_blocks=16` / `lp_split_launched=1402`.
+- Existing non-correctness open_resnet_like cases did not provide checksum,
+  output hash, or output element-count comparison; UXSched open_resnet_like
+  ordinary cases returned 139 in that artifact set.
+- Added correctness-mode runner cases using
+  `hb_open_resnet_like_runtime_eval --correctness-mode lp-only` with fixed
+  dimensions, deterministic memset input/weight initialization, one correctness
+  iteration, and `lp-correctness-sync-boundary=iteration`.
+- Set workload correctness split blocks to `4096` so the workload does not
+  provide the split evidence; UXSched HB_FIXED still uses
+  `UXSCHED_HB_SPLIT_BLOCKS=512`.
+- Added summary fields required for Gate 1, including checksum/hash/count
+  comparison and synchronization pass flags.
+- Codex did not run GPU validation; manual WSL rerun is still required.
 
 2026-06-24 handoff refresh:
 
@@ -286,9 +325,9 @@ Manual GPU runtime result currently on record:
 results/hb_gate1_manual_20260624_163059
 ```
 
-This manual run had GPU access and reached real CUDA execution, but HB_FIXED LP
-fell back with `NO_XQUEUE` and did not submit transformed child launches. After
-the current fix, Gate 1 must be manually rerun. Passing evidence must include:
+The latest manual run with the XQueue fix reached real UXSched transformed child
+launches. Gate 1 still must be manually rerun with the updated correctness/sync
+runner. Passing evidence must include:
 
 ```text
 uxsched_hb_no_xqueue_count=0
@@ -296,6 +335,12 @@ uxsched_hb_child_launch_count > 1
 transformed CUfunction child_launch_submitted logs
 child_launch_completed / parent_launch_completed logs
 Native, UXSched NATIVE, and HB_FIXED checksum/output_hash equality
+event_sync_pass=1
+stream_sync_pass=1
+context_sync_pass=1
+same_stream_ordering_pass=1
+parent_completion_pass=1
+gate1_pass=1
 ```
 
 ## Fallback Behavior

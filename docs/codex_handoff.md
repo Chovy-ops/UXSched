@@ -65,16 +65,16 @@ Chronological order:
 | `NativeRuntimeStrategy` | yes | yes | no | no | no |
 | `HummingbirdRuntimeStrategy` shell | yes | yes | no | no | no |
 | `NATIVE` strategy path | yes | yes | no | no | no |
-| `HB_FIXED` strategy path | yes | yes | no | no | no |
+| `HB_FIXED` strategy path | yes | yes | yes | no | no |
 | `HB_RUNTIME` mode | fallback only | yes | no | no | no |
 | `AUTO` mode | fallback only | yes | no | no | no |
 | PTX transformation | yes | yes | no | no | no |
 | Hidden transformed module | yes | yes | no | no | no |
 | Fixed grid decomposition | yes | yes | no | no | no |
-| `SplitCommandGroup` child tracking | yes | yes | no | no | no |
+| `SplitCommandGroup` child tracking | yes | yes | partial | no | no |
 | Per-XQueue threshold change to `1,1` | yes | yes | no | no | no |
 | Gate 1 smoke runner | yes | yes | partial | no | no |
-| CUDA stream to XQueue trace and auto-association | yes | yes | pending manual GPU rerun | no | no |
+| CUDA stream to XQueue trace and auto-association | yes | yes | yes | no | no |
 | GPU runtime benchmarks | no | no | no | no | no |
 
 Compilation success is not runtime verification. No performance numbers are
@@ -95,12 +95,14 @@ claimed.
   * `HB_FIXED` delegates to `hb_split::TryLaunchKernelFixed`.
   * `HB_RUNTIME` and `AUTO` explicitly fallback Native.
 * HB_FIXED:
-  * COMPILE VERIFIED, Gate 1 remains FAIL/PARTIAL pending manual GPU rerun.
+  * RUNTIME VERIFIED for real transformed child launches; Gate 1 remains
+    FAIL/PARTIAL pending correctness and synchronization rerun.
   * Source: `platforms/cuda/hal/src/hb_split/backend.cpp`,
     `TryLaunchKernelFixed`, `SubmitSplitCommands`.
-  * The manual GPU run in `results/hb_gate1_manual_20260624_163059` reached
-    PTX transform but fell back with `reason=NO_XQUEUE` before any transformed
-    child launch.
+  * The manual GPU run in
+    `results/hb_gate1_after_xqueue_fix_20260624_170107` observed transformed
+    module load, 78 parent launches, 312 transformed child launches,
+    fallback count 0, and `NO_XQUEUE` count 0.
 * HB_RUNTIME:
   * IMPLEMENTED as Native fallback only.
   * Source: `HummingbirdRuntimeStrategy::SubmitKernel`, fallback reason
@@ -119,7 +121,9 @@ claimed.
   * COMPILE VERIFIED, NOT TESTED on GPU.
   * Source: `DecomposeGrid`, `DecomposeBox`.
 * SplitCommandGroup:
-  * COMPILE VERIFIED, NOT TESTED.
+  * RUNTIME VERIFIED for child/parent completion log emission in the latest
+    manual split run; synchronization semantics still need dedicated Gate 1
+    probes.
   * Source: `SplitCommandGroup` and state listener inside
     `SubmitSplitCommands`.
   * It tracks child completion and clears child ownership; it is not an
@@ -128,11 +132,15 @@ claimed.
   * COMPILE VERIFIED, NOT TESTED on GPU.
   * Source: `SetLpSplitThresholdOnce`.
 * HP passthrough:
-  * COMPILE VERIFIED, NOT TESTED on GPU.
+  * RUNTIME VERIFIED for selection logging in the latest manual run, but the
+    updated runner still must verify transformed/child counts are zero and the
+    process exits without CUDA/runtime errors.
   * Source: `TryLaunchKernelFixed`, `IsLowPriority`, log reason
     `HIGH_PRIORITY_PASSTHROUGH`.
 * fallback:
-  * COMPILE VERIFIED, pending manual GPU rerun.
+  * RUNTIME VERIFIED for minimal Driver API fallback probes:
+    `PTX_UNAVAILABLE` and `KERNEL_NOT_VERIFIED` both exited normally in
+    `results/hb_gate1_after_xqueue_fix_20260624_170107`.
   * Sources: `TryLaunchKernelFixed`, `SubmitKernelWithRuntimeStrategy`.
   * PTX-present but unverified kernels now register `FunctionInfo` and fall back
     as `KERNEL_NOT_VERIFIED` instead of `<unknown>/PTX_UNAVAILABLE`.
@@ -141,8 +149,12 @@ claimed.
   * Saves per-case `command.txt`, `env.txt`, stdout/stderr, JSONL, return code,
     checksum extraction, split trace extraction, transformed launch evidence,
     child completion evidence, parent completion evidence, and xserver logs.
-  * Now writes UXSched backend stats separately from workload-internal split
-    stats and includes minimal default/explicit Driver API XQueue probes.
+  * Writes UXSched backend stats separately from workload-internal split stats.
+  * Now runs Native, UXSched NATIVE, and UXSched HB_FIXED correctness-mode cases;
+    default/explicit Driver API XQueue probes; event, stream, context,
+    same-stream ordering, and parent-completion sync probes; HP passthrough; and
+    separate `PTX_UNAVAILABLE` / `KERNEL_NOT_VERIFIED` fallback probes.
+  * Writes `gate1_summary.env`.
 * profiler:
   * BLOCKED, not implemented.
 * kernel-tick:
@@ -180,38 +192,35 @@ claimed.
 
 ## Current blocker
 
-Blocker type: Gate 1 `HB_FIXED` did not reach UXSched split launch in the manual
-GPU run.
+Blocker type: Gate 1 correctness and synchronization evidence is incomplete.
 
-Manual result directory:
+Latest manual result directory:
 
 ```text
-results/hb_gate1_manual_20260624_163059
+results/hb_gate1_after_xqueue_fix_20260624_170107
 ```
 
-Observed manual GPU result:
+Observed latest manual GPU result:
 
-* Native open_resnet_like ran on RTX 5060.
-* UXSched shim loaded and xserver accepted clients.
-* HP priority `10` logged `HIGH_PRIORITY_PASSTHROUGH`.
-* LP priority `-10` transformed at least the open_resnet_like PTX kernels, but
-  actual launches fell back with `backend_selected=NATIVE reason=NO_XQUEUE`.
-* `transformed_launch_evidence.log` showed no transformed child launch.
-* `sync_event_boundary_probe` workload fields such as `lp_split_launched=1402`
-  and `fixed_split_blocks=16` are workload-internal split counters, not UXSched
-  backend split evidence.
-
-Root cause found in code: `cuLaunchKernel` only looked up an already-registered
-XQueue by raw `CUstream`; stream creation from the workload did not pass through
-the shim's `XStreamCreate*` wrapper, and default stream was explicitly mapped to
-`xqueue=nullptr`. The current fix adds launch-time auto-association for missing
-managed streams and a per-context synthetic handle for default stream. This is
-COMPILE VERIFIED only until the user reruns the manual GPU probe.
+* GPU was accessible in the user's normal WSL session.
+* Default-stream and explicit-stream Driver API probes reached `HB_SPLIT`.
+* `uxsched_hb_fixed_lp` recorded `uxsched_hb_transform_count=4`,
+  `uxsched_hb_parent_launch_count=78`, `uxsched_hb_child_launch_count=312`,
+  `uxsched_hb_transformed_launch_count=312`, `uxsched_hb_fallback_count=0`, and
+  `uxsched_hb_no_xqueue_count=0`.
+* `split_group_completed` and `parent_launch_completed` were observed.
+* `sync_event_boundary_probe` is not valid Gate 1 sync evidence because its
+  UXSched transform/parent/child/transformed counts were all zero; its
+  `fixed_split_blocks=16` and `lp_split_launched=1402` fields were workload
+  internal counters.
+* Existing ordinary open_resnet_like UXSched cases did not emit checksum,
+  output hash, or output element count and returned 139 in that artifact set.
 
 ## Next task
 
-The next gated task is a manual GPU rerun of the minimal `HB_FIXED` LP probe and
-then correctness-mode Native/UXSched Native/HB_FIXED comparison.
+The next gated task is a manual GPU rerun of the updated Gate 1 runner in the
+normal WSL terminal. The required result is `gate1_summary.env` with
+`gate1_pass=1`.
 
 Do not start the complete Hummingbird runtime, coordinator, profiler,
 kernel-tick, bubble detection, consolidation, or CUTLASS workload until Gate 1
@@ -312,14 +321,30 @@ kill "${XSERVER_PID}"
 wait "${XSERVER_PID}" 2>/dev/null || true
 ```
 
-Reusable smoke wrapper:
+Reusable Gate 1 wrapper:
 
 ```bash
 cd /home/zm/project/UXSched
 bash tools/run_hb_gate1_smoke.sh --output-dir results/hb_gate1_<timestamp>
 ```
 
-Manual artifact directory that exposed the current blocker:
+The runner now produces these primary cases:
+
+```text
+native_correctness
+uxsched_native_correctness
+uxsched_hb_fixed_correctness
+sync_event_hb_fixed_probe
+sync_stream_hb_fixed_probe
+sync_context_hb_fixed_probe
+sync_same_stream_ordering_hb_fixed_probe
+sync_parent_completion_hb_fixed_probe
+probe_hb_fixed_hp_passthrough
+probe_fallback_ptx_unavailable
+probe_fallback_kernel_not_verified
+```
+
+Historical artifact directory that exposed the original NO_XQUEUE blocker:
 
 ```text
 results/hb_gate1_manual_20260624_163059
@@ -336,9 +361,24 @@ sync_event_boundary_probe: workload-internal split counters only; no UXSched spl
 xserver: started with HPF, accepted clients, then stopped
 ```
 
+Latest artifact directory after the XQueue fix:
+
+```text
+results/hb_gate1_after_xqueue_fix_20260624_170107
+```
+
+Latest artifact status:
+
+```text
+default stream probe: RAN with transformed child launches and NO_XQUEUE=0
+explicit stream probe: RAN with transformed child launches and NO_XQUEUE=0
+uxsched_hb_fixed_lp: RAN far enough to record 312 transformed child launches
+sync_event_boundary_probe: invalid Gate 1 sync evidence, no UXSched split trace
+ordinary open_resnet_like UXSched cases: no checksum/hash/count evidence and returned 139
+```
+
 Gate 1 remains FAIL/PARTIAL until a fresh manual run observes
-`uxsched_hb_no_xqueue_count=0`, transformed child submissions, child completion,
-and checksum/output hash equality.
+`gate1_pass=1` in `gate1_summary.env`.
 
 ## Expected outputs
 
@@ -365,13 +405,15 @@ Expected runtime logs for `HB_FIXED` Gate 1:
 
 Expected PASS conditions:
 
-* Native and `HB_FIXED` checksums match.
+* Native, UXSched NATIVE, and `HB_FIXED` checksums/output hashes/element counts
+  match.
 * LP produces more than one real split launch.
 * The transformed `CUfunction` is actually submitted.
 * HP kernels are not split.
 * Native fallback path completes successfully.
-* Event, stream, context/device synchronization semantics do not complete early.
-* Global Lv1 HPF smoke test passes without falling back to a local scheduler.
+* Event, stream, context/device, same-stream ordering, and parent-completion
+  synchronization checks pass.
+* No local scheduler fallback is observed.
 
 Expected result locations should be created by the chosen smoke script, not by
 this handoff file. Do not claim numeric performance until repeat runs exist.
@@ -389,6 +431,34 @@ Do not begin any of the following until Gate 1 passes:
 * split-kernel consolidation;
 * CUTLASS ResNet-like workload;
 * performance claims or repeat=3 benchmark summaries.
+
+## Latest session update
+
+2026-06-24 Gate 1 correctness/synchronization runner update:
+
+* Read `results/hb_gate1_after_xqueue_fix_20260624_170107`.
+* Confirmed the XQueue association fix reached real HB_FIXED split launch on
+  GPU, including transformed module load, transformed child submissions, child
+  completions, and parent completions.
+* Confirmed the remaining Gate 1 gap is correctness and synchronization
+  evidence, not stream-to-XQueue association.
+* Extended `tools/hb_xqueue_probe.cpp` with sync modes:
+  `event`, `stream`, `context`, `same-stream`, and `parent`.
+* Updated `tools/run_hb_gate1_smoke.sh` to generate full Gate 1 artifacts and
+  `gate1_summary.env`.
+* Correctness workload is `hb_open_resnet_like_runtime_eval` in
+  `--correctness-mode lp-only` with deterministic input/weight initialization,
+  fixed dimensions, one correctness iteration, and
+  `lp-correctness-sync-boundary=iteration`.
+* Workload correctness split blocks are set to `4096`; UXSched HB_FIXED split
+  blocks remain `512`, so UXSched backend stats are the split evidence.
+* Passed local non-GPU checks:
+  * `tools/build_hb_xqueue_probe.sh build-hb/hb_xqueue_probe`
+  * `cmake --build build-hb --target halcuda shimcuda -j2`
+  * `cmake --build build-native --target halcuda shimcuda -j2`
+  * `bash -n tools/run_hb_gate1_smoke.sh tools/build_hb_xqueue_probe.sh`
+  * `git diff --check`
+* GPU runtime validation was not run in Codex.
 
 ## Session completion checklist
 
