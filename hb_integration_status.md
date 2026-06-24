@@ -34,7 +34,8 @@ Allowed status values in this file:
 | open_resnet_like GPU validation | FAILED | Native and UXSched split launch evidence exists, but prior non-correctness UXSched open_resnet_like cases returned 139 and did not provide checksum/hash evidence. Old open_resnet correctness is deferred and is not a blocker for CUTLASS planning. |
 | CUDA stream to XQueue association fix | RUNTIME VERIFIED | Default-stream and explicit-stream Driver API probes both reached `HB_SPLIT` with transformed child launches and `NO_XQUEUE=0` in `results/hb_gate1_after_xqueue_fix_20260624_170107`. |
 | CUTLASS realtime benchmark plan | IMPLEMENTED | `docs/cutlass_realtime_benchmark_plan.md` audits the current realtime benchmark and defines the CUTLASS replacement plan. |
-| CUTLASS workload | NOT TESTED | Not implemented yet. CUTLASS correctness is mandatory before any P99 claim. |
+| CUTLASS launch compatibility probe | COMPILE VERIFIED | `benchmarks/cutlass/cutlass_launch_probe.cu` builds with external CUTLASS revision `ad7b2f5`, CUDA 12.8, and native SM120. Runtime GPU compatibility is not tested in Codex. |
+| CUTLASS workload | NOT TESTED | Full HP/LP realtime workload is not implemented yet. CUTLASS correctness is mandatory before any P99 claim. |
 | Persistent agent rules | IMPLEMENTED | Added `AGENTS.md` with UXSched-Hummingbird integration rules. |
 | Gate 1 smoke runner | IMPLEMENTED | `tools/run_hb_gate1_smoke.sh` now records correctness, sync, HP passthrough, fallback artifacts, and writes `gate1_summary.env`; GPU rerun is required. |
 
@@ -97,6 +98,12 @@ Allowed status values in this file:
   probes, and a final `gate1_summary.env`.
 - Added `docs/cutlass_realtime_benchmark_plan.md` with the CUTLASS realtime
   benchmark audit and implementation plan.
+- Added CUTLASS launch compatibility probe and runner:
+  - `benchmarks/cutlass/CMakeLists.txt`;
+  - `benchmarks/cutlass/cutlass_launch_probe.cu`;
+  - `benchmarks/cutlass/cutlass_probe_common.h`;
+  - `tools/build_cutlass_launch_probe.sh`;
+  - `tools/run_cutlass_launch_probe.sh`.
 - Built `xserver` and `xcli` in both `build-hb` and `build-native`.
 
 ## Partially Completed
@@ -125,6 +132,9 @@ Allowed status values in this file:
 - HB split combined with UXSched Lv2/Lv3.
 - cuBLAS/cuDNN closed kernel splitting.
 - CUTLASS realtime GEMM workload implementation and validation.
+- CUTLASS Runtime launch GPU compatibility validation.
+- CUTLASS Driver / `CudaHostAdapter` launch integration; current probe reports
+  `cutlass_driver_launch_integration_blocked`.
 - GPU runtime benchmark repeat runs.
 - Per-device runtime coordinator, profiler, kernel-tick, bubble detection, and
   consolidation remain intentionally unimplemented.
@@ -146,6 +156,11 @@ Allowed status values in this file:
 - `platforms/cuda/hal/src/level1/cuda_queue.cpp`
 - `platforms/cuda/hal/src/runtime/runtime_strategy.cpp`
 - `tools/run_hb_gate1_smoke.sh`
+- `benchmarks/cutlass/CMakeLists.txt`
+- `benchmarks/cutlass/cutlass_launch_probe.cu`
+- `benchmarks/cutlass/cutlass_probe_common.h`
+- `tools/build_cutlass_launch_probe.sh`
+- `tools/run_cutlass_launch_probe.sh`
 
 ## Added Files
 
@@ -259,6 +274,37 @@ Allowed status values in this file:
   - UXSched Native vs HB_FIXED fair comparison.
 - No CUTLASS download, implementation, scheduler change, GPU benchmark, or P99
   performance claim was made.
+
+2026-06-24 CUTLASS launch compatibility probe:
+
+- External CUTLASS source is available at `/home/zm/project/cutlass`.
+- CUTLASS revision: `ad7b2f5`.
+- CUDA Toolkit for this phase: `/usr/local/cuda-12.8`.
+- `nvcc`: `/usr/local/cuda-12.8/bin/nvcc`, release `12.8, V12.8.93`.
+- Probe mode is native SM120 only:
+  - `CMAKE_CUDA_ARCHITECTURES=120`;
+  - `CMAKE_CUDA_COMPILER=/usr/local/cuda-12.8/bin/nvcc`;
+  - `CUTLASS_MODE=NATIVE_SM120`.
+- Forward PTX compatibility mode is canceled.
+- Added a CUTLASS SIMT FP32 GEMM launch-path probe with deterministic inputs,
+  closed-form CPU reference, checksum, output hash, output element count, max
+  absolute and relative error, mismatch count, NaN/Inf counts, CUDA event time,
+  and CPU request time.
+- Runtime mode uses standard CUTLASS `device::Gemm::run(stream)`, which launches
+  through CUDA Runtime. Whether it reaches the UXSched HB backend must be
+  validated in a normal GPU WSL terminal.
+- Driver / `CudaHostAdapter` mode is explicitly blocked because CUTLASS does not
+  provide a generic official adapter that supplies `CUmodule`, `CUfunction`,
+  CUTLASS kernel parameter layout, dynamic shared memory, and stream for this
+  GEMM.
+- Built:
+  - `build-cutlass-cu128/cutlass_launch_probe`;
+  - `build-hb-cu128/platforms/cuda/libhalcuda.so`;
+  - `build-hb-cu128/platforms/cuda/libshimcuda.so`;
+  - `build-hb-cu128/service/xserver`;
+  - `build-hb-cu128/service/xcli`.
+- Codex did not run Runtime GPU validation, HP/LP realtime benchmark, split-size
+  sweep, or P99 experiment.
 
 2026-06-24 handoff refresh:
 

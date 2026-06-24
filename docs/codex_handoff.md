@@ -447,6 +447,40 @@ GEMM workload. Do not download CUTLASS automatically; use a user-provided
 
 ## Latest session update
 
+2026-06-24 CUTLASS launch compatibility probe:
+
+* External CUTLASS source is available at `/home/zm/project/cutlass`.
+* CUTLASS revision used for the probe build: `ad7b2f5`.
+* CUDA toolkit for this phase is `/usr/local/cuda-12.8`; `nvcc` is
+  `/usr/local/cuda-12.8/bin/nvcc`, release `12.8, V12.8.93`.
+* The phase uses native SM120 only:
+  `CMAKE_CUDA_ARCHITECTURES=120` and `CUTLASS_MODE=NATIVE_SM120`.
+* The older Forward PTX compatibility path is canceled.
+* Added a single-process CUTLASS SIMT FP32 GEMM launch-path probe:
+  `benchmarks/cutlass/cutlass_launch_probe.cu`.
+* Added a standalone CUTLASS CMake project under `benchmarks/cutlass`.
+* Added:
+  * `tools/build_cutlass_launch_probe.sh`
+  * `tools/run_cutlass_launch_probe.sh`
+* Runtime mode uses standard CUTLASS device GEMM. Its audited launch path is
+  `Gemm::run(stream)` to CUTLASS kernel launch to CUDA Runtime launch; UXSched
+  can only split it if libcudart resolves to intercepted Driver API and module
+  PTX/function metadata is visible.
+* Driver / `CudaHostAdapter` mode is explicitly blocked for this probe because
+  CUTLASS does not provide a generic official adapter that supplies `CUmodule`,
+  `CUfunction`, kernel parameter layout, dynamic shared memory, and stream for
+  this GEMM.
+* Passed non-GPU checks:
+  * `bash -n tools/build_cutlass_launch_probe.sh`
+  * `bash -n tools/run_cutlass_launch_probe.sh`
+  * `tools/build_cutlass_launch_probe.sh --build-dir build-cutlass-cu128 ...`
+  * `cmake -S . -B build-hb-cu128 ...`
+  * `cmake --build build-hb-cu128 --target halcuda shimcuda xserver xcli -j2`
+  * `build-cutlass-cu128/cutlass_launch_probe --mode driver ...` returned the
+    expected `cutlass_driver_launch_integration_blocked` JSON.
+* Codex did not run Runtime GPU cases, did not run HP/LP realtime benchmarks,
+  and did not make P99 claims.
+
 2026-06-24 CUTLASS realtime benchmark audit/design:
 
 * Audited `benchmarks/realtime_inference_latency.py` and its direct xserver,

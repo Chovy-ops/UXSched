@@ -236,17 +236,25 @@ Parts to replace:
 
 ## Local CUTLASS/CUDA Audit
 
-Current local result:
+Original audit result:
 
 - No CUTLASS source tree or CUTLASS submodule was found under UXSched or
   Hummingbird by local filesystem search.
 - UXSched submodules do not include CUTLASS; current submodules are CLI11,
   cpp-httplib, cuxtra, ftxui, ipc, jsoncpp, and nested ipc dependencies.
-- CUDA toolkit exists locally:
-  - `/usr/bin/nvcc`
-  - `nvcc release 12.0, V12.0.140`
-  - `/usr/local/cuda/include/cuda.h`
-  - `/usr/local/cuda/include/cuda_runtime.h`
+- CUDA toolkit found during the original audit was CUDA 12.0.
+
+Current CUTLASS launch-compatibility probe environment:
+
+- External CUTLASS source is available at `/home/zm/project/cutlass`.
+- CUTLASS revision audited by the probe build is `ad7b2f5`.
+- CUDA toolkit is `/usr/local/cuda-12.8`.
+- `nvcc` is `/usr/local/cuda-12.8/bin/nvcc`, release `12.8, V12.8.93`.
+- The probe uses native SM120 only:
+  - `CMAKE_CUDA_ARCHITECTURES=120`
+  - `CMAKE_CUDA_COMPILER=/usr/local/cuda-12.8/bin/nvcc`
+  - `CUTLASS_MODE=NATIVE_SM120`
+- The older Forward PTX compatibility idea is canceled for this phase.
 - Hummingbird already has optional CUTLASS detection in
   `/home/zm/project/hummingbird/benchmarks/CMakeLists.txt:24-40`.
   It searches:
@@ -283,11 +291,20 @@ the CUTLASS benchmark target is requested.
 Add a new CUTLASS benchmark and runner rather than modifying
 `realtime_inference_latency.py` in place.
 
-Proposed files:
+Initial launch-compatibility probe files:
+
+```text
+benchmarks/cutlass/CMakeLists.txt
+benchmarks/cutlass/cutlass_launch_probe.cu
+benchmarks/cutlass/cutlass_probe_common.h
+tools/build_cutlass_launch_probe.sh
+tools/run_cutlass_launch_probe.sh
+```
+
+Future realtime benchmark files:
 
 ```text
 benchmarks/cutlass_realtime_latency.py
-benchmarks/cutlass/CMakeLists.txt
 benchmarks/cutlass/cutlass_realtime_gemm.cu
 benchmarks/cutlass/cutlass_realtime_common.h
 tools/run_cutlass_realtime_gate.sh
@@ -468,6 +485,89 @@ Features to actively disable in first version:
 
 First version should use the most conservative CUTLASS GEMM that still launches
 one visible GEMM kernel and exposes a stable kernel name.
+
+## Launch Compatibility Probe
+
+The first implemented CUTLASS artifact is a single-process launch-path probe,
+not the HP/LP realtime benchmark.
+
+Implemented probe:
+
+```text
+benchmarks/cutlass/cutlass_launch_probe.cu
+```
+
+Build helper:
+
+```text
+tools/build_cutlass_launch_probe.sh
+```
+
+Runner:
+
+```text
+tools/run_cutlass_launch_probe.sh
+```
+
+Runtime mode:
+
+- Uses `cutlass::gemm::device::Gemm` with FP32 input, FP32 output, FP32
+  accumulation, SIMT, `cutlass::arch::Sm120`, and identity threadblock swizzle.
+- The CUTLASS call chain is:
+
+```text
+ProbeGemm::run(stream)
+  -> cutlass::gemm::device::Gemm::run(stream)
+  -> cutlass::Kernel<GemmKernel><<<grid, block, smem, stream>>>(params_)
+  -> CUDA Runtime launch
+  -> CUDA Driver launch path, if libcudart resolves through intercepted Driver API
+```
+
+- For CUTLASS 3.x universal kernels, `cutlass::kernel_launch` uses
+  `device_kernel<GemmKernel><<<...>>>(kernel_params)` when PDL is disabled; PDL
+  would use `cudaLaunchKernelEx`, which the current UXSched HB path does not
+  split.
+- The current UXSched shim can only split this mode if the Runtime launch reaches
+  intercepted `cuLaunchKernel` and module/function metadata is visible to
+  `cuModuleLoad*` / `cuModuleGetFunction`.
+- If the Runtime launch runs correctly but HB backend counts remain zero, the
+  runner records `runtime_launch_not_intercepted=1` rather than treating it as a
+  CUDA correctness failure.
+
+Driver / `CudaHostAdapter` mode:
+
+- CUTLASS `CudaHostAdapter` is an abstract interface intended to let CUTLASS
+  call a host-provided launcher.
+- It does not by itself provide a generic official path to obtain `CUmodule`,
+  `CUfunction`, the exact CUTLASS kernel parameter layout, dynamic shared-memory
+  size, and stream for a `cuLaunchKernel` call for this GEMM.
+- The probe therefore implements driver mode as an explicit blocked case that
+  emits:
+
+```text
+cutlass_driver_launch_integration_blocked
+```
+
+- This avoids replacing CUTLASS with a custom CUDA kernel or bypassing UXSched.
+
+Correctness model:
+
+- A and B are deterministic FP32 matrices with values chosen so the CPU
+  reference can be computed in O(M*N) rather than O(M*N*K).
+- The probe outputs checksum, raw output hash, output element count, max
+  absolute error, max relative error, mismatch count, NaN count, Inf count,
+  CPU request time, and CUDA event time.
+- FP32 tolerances are emitted by the binary:
+  - absolute tolerance `1e-2`
+  - relative tolerance `1e-4`
+
+Current non-GPU build status:
+
+- `tools/build_cutlass_launch_probe.sh` configured and built
+  `build-cutlass-cu128/cutlass_launch_probe`.
+- `build-hb-cu128` was configured separately and built `halcuda`, `shimcuda`,
+  `xserver`, and `xcli`.
+- Codex did not run Runtime GPU cases or claim HB_FIXED CUTLASS compatibility.
 
 ## Fair Core Comparison
 
