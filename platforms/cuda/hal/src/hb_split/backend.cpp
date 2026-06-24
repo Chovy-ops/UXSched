@@ -200,7 +200,14 @@ bool Lv1Compatible()
 
 bool RuntimeEnabled()
 {
-    return BuildEnabled() && BackendModeFromEnv() != BackendMode::kNative;
+    if (!BuildEnabled()) return false;
+
+    const char *strategy = std::getenv("UXSCHED_CUDA_RUNTIME_STRATEGY");
+    if (strategy != nullptr && strategy[0] != '\0') {
+        return strcasecmp(strategy, "HB_FIXED") == 0 || strcasecmp(strategy, "HB_SPLIT") == 0;
+    }
+
+    return BackendModeFromEnv() != BackendMode::kNative;
 }
 
 void LogConfigOnce()

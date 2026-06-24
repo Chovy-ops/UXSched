@@ -45,6 +45,9 @@ inside the UXSched CUDA platform.
   state is not available yet.
 
 Legacy `UXSCHED_CUDA_PREEMPT_BACKEND` remains accepted for compatibility.
+PTX transformation is currently enabled only for `HB_FIXED` or the legacy
+fixed-split backend path, so unimplemented `HB_RUNTIME` and `AUTO` modes do not
+mutate module-load behavior before their coordinator is implemented.
 
 ## Current Gate
 
@@ -53,4 +56,3 @@ Current gate status:
 - Gate 1 HB_FIXED GPU correctness: NOT TESTED.
 - Gate 2 Global HP/LP smoke: NOT TESTED.
 - Gate 3 synchronization semantics: NOT TESTED.
-
