@@ -33,6 +33,7 @@ Allowed status values in this file:
 | GPU visibility | BLOCKED | `nvidia-smi` reports GPU access blocked by the operating system. |
 | open_resnet_like GPU validation | BLOCKED | Gate 1 cannot run until GPU access is available. |
 | CUTLASS workload | BLOCKED | Must wait until Gate 8. |
+| Persistent agent rules | IMPLEMENTED | Added `AGENTS.md` with UXSched-Hummingbird integration rules. |
 
 ## Completed
 
@@ -49,6 +50,7 @@ Allowed status values in this file:
   - `UXSCHED_CUDA_RUNTIME_STRATEGY=AUTO`
 - Added `CudaRuntimeStrategy`, `NativeRuntimeStrategy`, and
   `HummingbirdRuntimeStrategy`.
+- Added persistent project rules in `AGENTS.md`.
 - Kept UXSched CUDA shim as the only CUDA hook entry.
 - Routed module load/get/unload wrappers through UXSched HB-aware code:
   - `cuModuleLoad`
@@ -127,7 +129,18 @@ Allowed status values in this file:
 - `docs/hummingbird_runtime_bubble_detection.md`
 - `docs/hummingbird_runtime_test_plan.md`
 - `docs/hummingbird_runtime_results.md`
+- `docs/codex_handoff.md`
+- `AGENTS.md`
 - `hb_integration_status.md`
+
+## Session Handoff
+
+2026-06-24:
+
+- Added `AGENTS.md` with permanent UXSched-Hummingbird integration rules.
+- Created `docs/codex_handoff.md`.
+- No source code behavior changed in this session.
+- Hummingbird repository remained read-only.
 
 ## Build Results
 
