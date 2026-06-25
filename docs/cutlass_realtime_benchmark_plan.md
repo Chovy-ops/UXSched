@@ -1004,4 +1004,11 @@ FAIL:
 - CUTLASS fixed HB split size for the current formal experiment: 52 blocks.
   Source: Hummingbird hardware formula plus repeat=3 endpoint validation.
 - repeat=1 GPU smoke: waiting for user manual WSL GPU execution.
-- repeat=5 final P99 benchmark: not started.
+- repeat=5 final P99 benchmark: user GPU run completed for the current RTX 5060
+  Laptop GPU, CUDA 12.8, SM120 FP32 SIMT CUTLASS GEMM, M=N=K=2048 setup.
+- Final plotting/report script: `tools/plot_cutlass_realtime_results.py`.
+- Final artifacts were generated under
+  `results/cutlass_realtime_compare_split52_repeat5_20260625_141255/figures/`
+  and `final_report.md`. These artifacts are not committed to Git.
+- The main conclusion is limited to the current GPU, current CUTLASS kernel, and
+  current benchmark configuration.

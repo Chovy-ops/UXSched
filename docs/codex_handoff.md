@@ -656,6 +656,39 @@ GEMM workload. Do not download CUTLASS automatically; use a user-provided
 
 ## Session completion checklist
 
+2026-06-25 CUTLASS repeat=5 final result plotting:
+
+* Selected final result directory:
+  `results/cutlass_realtime_compare_split52_repeat5_20260625_141255`.
+* The selected directory contains `summary.csv`, `comparison.csv`,
+  `metadata.env`, repeats 0-4, and all three systems:
+  `standalone_hp`, `uxsched_native_hp_lp`, and `uxsched_hb_fixed_hp_lp`.
+* All 15 case rows are `COMPLETE`, all correctness checks passed, and each row
+  has `hp_count=200`.
+* HB_FIXED Gate passed for all five repeats:
+  * `runtime_hb_metadata_bridge_pass=1`;
+  * warmup transform count was 1 and measurement transform delta was 0;
+  * every LP parent had exactly 6 child launches;
+  * fallback count and `NO_XQUEUE` count were 0;
+  * HP transform count was 0;
+  * Global HPF log checks passed and local fallback count was 0.
+* Added `tools/plot_cutlass_realtime_results.py`.
+  * Reads `summary.csv`, `comparison.csv`, and HB backend stats.
+  * Performs Gate checks before plotting.
+  * Uses matplotlib without pandas or seaborn.
+  * Generates PNG/PDF/SVG figures, `final_metrics.csv`,
+    `final_derived_metrics.csv`, `final_metrics.md`, and `final_report.md`
+    under the result directory.
+* Generated final artifacts in the result directory, but did not add the
+  `results/` tree to Git.
+* Core paired-repeat metrics from CSV:
+  * HP P99 ratio: 0.5024226243, reduction: 49.7577375653%;
+  * HP P95 ratio: 0.4999064297, reduction: 50.0093570332%;
+  * HP mean ratio: 0.5764918472, reduction: 42.3508152788%;
+  * LP throughput ratio: 0.5728833846, retention: 57.2883384624%, loss:
+    42.7116615376%.
+* No GPU benchmark was run in Codex.
+
 2026-06-25 CUTLASS fixed split and summary formatting update:
 
 * User GPU testing compared `UXSCHED_HB_SPLIT_BLOCKS=52` and `64` with

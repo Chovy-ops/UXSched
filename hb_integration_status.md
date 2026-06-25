@@ -500,4 +500,15 @@ because transformed code is loaded into a hidden module.
   - This is not automatic split selection, not runtime profiling, and not a
     global optimum for other GPUs or kernels.
 - repeat=1 GPU smoke: NOT TESTED in Codex, waiting for user WSL GPU run.
-- repeat=5 final P99 experiment: NOT TESTED and not started.
+- repeat=5 final P99 experiment: PERFORMANCE VERIFIED for the current RTX 5060
+  Laptop GPU, CUDA 12.8, SM120 FP32 SIMT CUTLASS GEMM, M=N=K=2048 setup.
+  - Selected result directory:
+    `results/cutlass_realtime_compare_split52_repeat5_20260625_141255`.
+  - UXSched + HB_FIXED versus UXSched Native paired-repeat metrics:
+    HP P99 ratio `0.5024226243`, HP P99 reduction `49.7577375653%`,
+    LP throughput retention `57.2883384624%`, LP throughput loss
+    `42.7116615376%`.
+  - The result remains scoped to this GPU/kernel/configuration and is not a
+    claim of global optimality.
+- Final report and figures: generated in the result directory by
+  `tools/plot_cutlass_realtime_results.py`; not committed to Git.
