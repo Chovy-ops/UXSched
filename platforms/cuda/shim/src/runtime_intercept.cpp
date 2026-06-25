@@ -15,6 +15,7 @@
 #include "xsched/utils/common.h"
 #include "xsched/utils/log.h"
 #include "xsched/cuda/shim/shim.h"
+#include "xsched/cuda/hal/common/driver.h"
 #include "xsched/cuda/hal/hb_split/backend.h"
 #include "xsched/cuda/hal/runtime/runtime_strategy.h"
 
@@ -322,9 +323,23 @@ ResolvedRuntimeFunction ResolveRuntimeFunction(const void *host_stub,
     ptx.push_back('\0');
 
     CUmodule module = nullptr;
-    CUresult load_ret = xsched::cuda::hb_split::XModuleLoadDataEx(&module, ptx.data(), 0, nullptr, nullptr);
+    CUresult load_ret = xsched::cuda::Driver::ModuleLoadDataEx(&module, ptx.data(), 0, nullptr, nullptr);
     if (load_ret != CUDA_SUCCESS || module == nullptr) {
         ResolvedRuntimeFunction out{true, module, nullptr, "", "RUNTIME_PTX_LOAD_FAILED"};
+        std::lock_guard<std::mutex> lock(g_mu);
+        g_resolved_functions[host_stub] = out;
+        return out;
+    }
+
+    auto module_reg = xsched::cuda::hb_split::RegisterModuleMetadata(
+        module, fatbin.ptx.data(), fatbin.ptx.size());
+    CUDART_TRACE("runtime_hb_module_registered module=%p ptx_bytes=%zu record_count=%zu "
+                 "result=%s",
+                 module, module_reg.ptx_bytes, module_reg.record_count,
+                 module_reg.ok ? "OK" : module_reg.reason.c_str());
+    if (!module_reg.ok) {
+        (void)xsched::cuda::Driver::ModuleUnload(module);
+        ResolvedRuntimeFunction out{true, nullptr, nullptr, "", module_reg.reason};
         std::lock_guard<std::mutex> lock(g_mu);
         g_resolved_functions[host_stub] = out;
         return out;
@@ -341,7 +356,7 @@ ResolvedRuntimeFunction ResolveRuntimeFunction(const void *host_stub,
     std::string resolved_name;
     CUresult func_ret = CUDA_ERROR_NOT_FOUND;
     for (const std::string &candidate : candidates) {
-        func_ret = xsched::cuda::hb_split::XModuleGetFunction(&function, module, candidate.c_str());
+        func_ret = xsched::cuda::Driver::ModuleGetFunction(&function, module, candidate.c_str());
         if (func_ret == CUDA_SUCCESS && function != nullptr) {
             resolved_name = candidate;
             break;
@@ -350,6 +365,20 @@ ResolvedRuntimeFunction ResolveRuntimeFunction(const void *host_stub,
     if (func_ret != CUDA_SUCCESS || function == nullptr) {
         xsched::cuda::hb_split::XModuleUnload(module);
         ResolvedRuntimeFunction out{true, nullptr, nullptr, "", "RUNTIME_FUNCTION_RESOLVE_FAILED"};
+        std::lock_guard<std::mutex> lock(g_mu);
+        g_resolved_functions[host_stub] = out;
+        return out;
+    }
+
+    auto function_reg = xsched::cuda::hb_split::RegisterFunctionMetadata(
+        function, module, resolved_name.c_str());
+    CUDART_TRACE("runtime_hb_function_registered function=%p module=%p kernel_name=%s "
+                 "record_count=%zu result=%s",
+                 function, module, resolved_name.c_str(), function_reg.record_count,
+                 function_reg.ok ? "OK" : function_reg.reason.c_str());
+    if (!function_reg.ok) {
+        xsched::cuda::hb_split::XModuleUnload(module);
+        ResolvedRuntimeFunction out{true, nullptr, nullptr, "", function_reg.reason};
         std::lock_guard<std::mutex> lock(g_mu);
         g_resolved_functions[host_stub] = out;
         return out;
@@ -535,10 +564,13 @@ EXPORT_C_FUNC cudaError_t cudaLaunchKernel(const void *func, dim3 grid_dim, dim3
         return cu_result == CUDA_SUCCESS ? cudaSuccess : cudaErrorUnknown;
     }
 
-    CUDART_TRACE("runtime_launch_fallback host_stub=%p kernel_name=%s "
-                 "reason=RUNTIME_HB_FIXED_FALLBACK_NATIVE xqueue=0x" FMT_64X
-                 " stream=%p",
-                 func, resolved.kernel_name.c_str(), xq->GetHandle(), cu_stream);
+    std::string hb_reason;
+    (void)xsched::cuda::hb_split::LookupFunctionMetadata(resolved.function, nullptr, &hb_reason);
+    CUDART_TRACE("runtime_launch_fallback host_stub=%p kernel_name=%s reason=%s "
+                 "xqueue=0x" FMT_64X " stream=%p",
+                 func, resolved.kernel_name.c_str(),
+                 hb_reason.empty() ? "RUNTIME_HB_FIXED_FALLBACK_NATIVE" : hb_reason.c_str(),
+                 xq->GetHandle(), cu_stream);
     return LaunchNativeRuntime(func, grid_dim, block_dim, args, shared_mem, stream);
 }
 

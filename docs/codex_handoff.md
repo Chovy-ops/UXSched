@@ -125,6 +125,62 @@ Static evidence:
 GPU validation was not run in Codex. The user must rerun
 `tools/run_cutlass_launch_probe.sh` from a normal WSL GPU terminal.
 
+## 2026-06-25 CUTLASS Runtime Metadata Bridge Update
+
+User GPU result after `9969773` confirmed:
+
+* Runtime API interception works: `runtime_launch_intercepted_count=1`.
+* Runtime fatbin/PTX extraction works: `ptx_available=1`, `ptx_bytes=106384`.
+* Runtime CUfunction resolution works: `runtime_function_resolved_count=1`.
+* Runtime synchronization bridge works: `runtime_sync_intercepted_count=8`.
+* Native and UXSched NATIVE CUTLASS correctness pass.
+* HB_FIXED correctness fallback still produced correct output, but the HB
+  backend did not transform because it saw
+  `function=<unknown> reason=PTX_UNAVAILABLE`.
+
+Root cause:
+
+* The HB backend registry is `g_modules` and `g_functions` in
+  `platforms/cuda/hal/src/hb_split/backend.cpp`.
+* Driver API module load wrappers register `CUmodule -> ModuleInfo`; Driver API
+  `cuModuleGetFunction` registers `CUfunction -> FunctionInfo` only when the
+  requested kernel name exists in `ModuleInfo.records`.
+* Runtime bridge could load a module and resolve a `CUfunction`, but did not
+  explicitly assert/register `CUmodule -> PTX` and `CUfunction -> kernel name`
+  metadata into the HB registry before calling `TryLaunchKernelFixed`.
+* `XModuleGetFunction` returns the real Driver result even if metadata was not
+  registered, so Runtime bridge logged function resolution success while the HB
+  backend later failed lookup.
+
+Fix:
+
+* Added public internal metadata APIs in `hb_split`:
+  `RegisterModuleMetadata`, `RegisterFunctionMetadata`,
+  `UnregisterModuleMetadata`, and `LookupFunctionMetadata`.
+* Driver wrappers and Runtime bridge now share the same registration helpers.
+* Runtime bridge now loads Runtime PTX with the real Driver API, then explicitly
+  registers module metadata and function metadata before HB_FIXED dispatch.
+* HB metadata owns a PTX string copy for the module lifetime; Runtime fatbin
+  temporary buffers are not referenced by HB registry.
+* Runtime unregister unloads modules via `XModuleUnload`, which removes original
+  function mappings, module metadata, and hidden transformed modules.
+* Added Runtime logs:
+  `runtime_hb_module_registered` and `runtime_hb_function_registered`.
+* Added CPU-side fake-handle registry probe:
+  `tools/hb_metadata_registry_probe.cpp` and
+  `tools/build_hb_metadata_registry_probe.sh`.
+
+Local non-GPU checks passed:
+
+```bash
+cmake --build build-hb-cu128 --target halcuda shimcuda -j2
+tools/build_hb_metadata_registry_probe.sh build-hb-cu128
+build-hb-cu128/hb_metadata_registry_probe
+bash -n tools/build_hb_metadata_registry_probe.sh
+bash -n tools/build_cutlass_launch_probe.sh
+bash -n tools/run_cutlass_launch_probe.sh
+```
+
 ## Implemented and verified
 
 | Item | Implemented | Compile verified | Runtime verified | Correctness verified | Performance verified |

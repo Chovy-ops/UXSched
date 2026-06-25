@@ -35,7 +35,7 @@ Allowed status values in this file:
 | CUDA stream to XQueue association fix | RUNTIME VERIFIED | Default-stream and explicit-stream Driver API probes both reached `HB_SPLIT` with transformed child launches and `NO_XQUEUE=0` in `results/hb_gate1_after_xqueue_fix_20260624_170107`. |
 | CUTLASS realtime benchmark plan | IMPLEMENTED | `docs/cutlass_realtime_benchmark_plan.md` audits the current realtime benchmark and defines the CUTLASS replacement plan. |
 | CUTLASS launch compatibility probe | COMPILE VERIFIED | `benchmarks/cutlass/cutlass_launch_probe.cu` builds with external CUTLASS revision `ad7b2f5`, CUDA 12.8, native SM120 SASS, and PTX. User manual GPU result verified Native and UXSched NATIVE correctness, but HB_FIXED backend was not exercised before the Runtime bridge. Runtime GPU compatibility must be rerun outside Codex. |
-| CUTLASS CUDA Runtime bridge | COMPILE VERIFIED | Existing `libshimcuda.so` now intercepts CUDA Runtime fatbin/function registration, `cudaLaunchKernel`, and the Runtime stream/event/device synchronization APIs used by the CUTLASS probe. It maps host stubs to registered CUTLASS kernel names/PTX and reuses the existing HB_FIXED backend. Static symbol and build checks passed; real GPU HB_FIXED transformed launch is not yet rerun. |
+| CUTLASS CUDA Runtime bridge | COMPILE VERIFIED | Existing `libshimcuda.so` intercepts CUDA Runtime fatbin/function registration, `cudaLaunchKernel`, and Runtime stream/event/device synchronization APIs used by the CUTLASS probe. User GPU result confirmed Runtime API interception, PTX extraction, CUfunction resolution, and Runtime sync interception. The metadata bridge now explicitly registers Runtime `CUmodule -> PTX` and `CUfunction -> kernel name` into the existing HB backend registry; GPU rerun is required to verify that `function=<unknown>/PTX_UNAVAILABLE` is gone. |
 | CUTLASS workload | NOT TESTED | Full HP/LP realtime workload is not implemented yet. CUTLASS correctness is mandatory before any P99 claim. |
 | Persistent agent rules | IMPLEMENTED | Added `AGENTS.md` with UXSched-Hummingbird integration rules. |
 | Gate 1 smoke runner | IMPLEMENTED | `tools/run_hb_gate1_smoke.sh` now records correctness, sync, HP passthrough, fallback artifacts, and writes `gate1_summary.env`; GPU rerun is required. |
@@ -115,6 +115,14 @@ Allowed status values in this file:
 - Updated `tools/run_cutlass_launch_probe.sh` to save `ldd`, dynamic symbol,
   `cuobjdump` PTX/SASS evidence, Runtime registration logs, Runtime intercept
   counts, Runtime sync intercept counts, and discovered CUTLASS kernel name.
+- Added HB metadata registration APIs shared by Driver hooks and Runtime bridge:
+  `RegisterModuleMetadata`, `RegisterFunctionMetadata`,
+  `UnregisterModuleMetadata`, and `LookupFunctionMetadata`.
+- Runtime bridge now logs `runtime_hb_module_registered` and
+  `runtime_hb_function_registered` before HB_FIXED dispatch.
+- Added CPU-side metadata registry probe:
+  `tools/hb_metadata_registry_probe.cpp` and
+  `tools/build_hb_metadata_registry_probe.sh`.
 - Added CUTLASS launch compatibility probe and runner:
   - `benchmarks/cutlass/CMakeLists.txt`;
   - `benchmarks/cutlass/cutlass_launch_probe.cu`;

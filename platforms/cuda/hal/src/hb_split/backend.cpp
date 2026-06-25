@@ -79,6 +79,10 @@ struct KernelTransformRecord
 struct ModuleInfo
 {
     bool ptx_available = false;
+    std::shared_ptr<const std::string> original_ptx;
+    size_t ptx_bytes = 0;
+    CUcontext context = nullptr;
+    CUdevice device = CU_DEVICE_INVALID;
     CUmodule transformed_module = nullptr;
     std::unordered_map<std::string, KernelTransformRecord> records;
 };
@@ -254,13 +258,25 @@ bool LooksLikePtxText(const void *image, size_t nbytes)
     return false;
 }
 
+std::optional<size_t> FindEntryName(const std::string &s, const std::string &kernel_name)
+{
+    const std::array<std::string, 2> needles{
+        ".visible .entry " + kernel_name,
+        ".entry " + kernel_name,
+    };
+    for (const std::string &needle : needles) {
+        size_t pos = s.find(needle);
+        if (pos != std::string::npos) return pos + needle.size();
+    }
+    return std::nullopt;
+}
+
 bool FindEntryParamClose(const std::string &s, const std::string &kernel_name,
                          size_t &open_paren, size_t &close_paren)
 {
-    const std::string needle = ".visible .entry " + kernel_name;
-    size_t pos = s.find(needle);
-    if (pos == std::string::npos) return false;
-    pos = s.find('(', pos + needle.size());
+    auto entry_end = FindEntryName(s, kernel_name);
+    if (!entry_end) return false;
+    size_t pos = s.find('(', *entry_end);
     if (pos == std::string::npos) return false;
     int depth = 0;
     for (size_t i = pos; i < s.size(); ++i) {
@@ -436,9 +452,14 @@ PtxTransformResult TransformKernelPtx(const std::string &ptx, const std::string 
 std::vector<std::string> CollectEntryNames(const std::string &ptx)
 {
     std::vector<std::string> names;
-    static constexpr const char *kNeedle = ".visible .entry ";
+    static constexpr const char *kNeedle = ".entry ";
     size_t pos = 0;
     while ((pos = ptx.find(kNeedle, pos)) != std::string::npos) {
+        if (pos > 0 && (std::isalnum((unsigned char)ptx[pos - 1]) ||
+                        ptx[pos - 1] == '_' || ptx[pos - 1] == '.')) {
+            pos += std::strlen(kNeedle);
+            continue;
+        }
         pos += std::strlen(kNeedle);
         while (pos < ptx.size() && IsSpace(ptx[pos])) ++pos;
         size_t end = pos;
@@ -489,10 +510,16 @@ std::optional<size_t> CountParamsForKernel(const std::string &ptx, const std::st
     return count;
 }
 
-ModuleInfo TransformModulePtx(const std::string &ptx)
+ModuleInfo TransformModulePtx(const std::shared_ptr<const std::string> &ptx_owner)
 {
     ModuleInfo info;
     info.ptx_available = true;
+    info.original_ptx = ptx_owner;
+    info.ptx_bytes = ptx_owner == nullptr ? 0 : ptx_owner->size();
+    if (Driver::CtxGetCurrent(&info.context) != CUDA_SUCCESS) info.context = nullptr;
+    if (Driver::CtxGetDevice(&info.device) != CUDA_SUCCESS) info.device = CU_DEVICE_INVALID;
+
+    const std::string &ptx = *ptx_owner;
 
     bool wildcard = false;
     const std::set<std::string> verified = VerifiedKernelNames(&wildcard);
@@ -581,11 +608,20 @@ ModuleInfo TransformModulePtx(const std::string &ptx)
     return info;
 }
 
-void RegisterModuleInfo(CUmodule module, ModuleInfo info)
+MetadataRegistrationResult RegisterModuleInfo(CUmodule module, ModuleInfo info)
 {
-    if (module == nullptr) return;
+    MetadataRegistrationResult result;
+    if (module == nullptr) {
+        result.reason = "RUNTIME_HB_MODULE_REGISTER_FAILED";
+        return result;
+    }
+    result.ok = true;
+    result.reason = "OK";
+    result.ptx_bytes = info.ptx_bytes;
+    result.record_count = info.records.size();
     std::lock_guard<std::mutex> lock(g_mu);
     g_modules[module] = std::move(info);
+    return result;
 }
 
 std::optional<ModuleInfo> FindModuleInfo(CUmodule module)
@@ -602,6 +638,85 @@ std::optional<FunctionInfo> FindFunctionInfo(CUfunction function)
     auto it = g_functions.find(function);
     if (it == g_functions.end()) return std::nullopt;
     return it->second;
+}
+
+MetadataRegistrationResult RegisterFunctionInfo(CUfunction function, CUmodule module,
+                                                const char *name)
+{
+    MetadataRegistrationResult result;
+    if (function == nullptr || module == nullptr || name == nullptr || name[0] == '\0') {
+        result.reason = "RUNTIME_HB_FUNCTION_REGISTER_FAILED";
+        return result;
+    }
+
+    auto module_info = FindModuleInfo(module);
+    if (!module_info) {
+        result.reason = "RUNTIME_HB_MODULE_NOT_REGISTERED";
+        return result;
+    }
+
+    FunctionInfo info;
+    auto rec_it = module_info->records.find(name);
+    if (rec_it != module_info->records.end()) {
+        info.capability = rec_it->second.capability;
+        info.original_param_count = rec_it->second.original_param_count;
+    } else {
+        info.capability.ptx_available = module_info->ptx_available;
+        info.capability.supports_kernel_params = true;
+        info.capability.supports_extra = false;
+        info.capability.fallback_reason = "ENTRY_NOT_FOUND";
+        if (module_info->original_ptx != nullptr) {
+            auto param_count = CountParamsForKernel(*module_info->original_ptx, name);
+            if (param_count) info.original_param_count = *param_count;
+        }
+    }
+
+    info.kernel_name = name;
+    info.original_module = module;
+    info.original_function = function;
+
+    if (info.capability.transform_succeeded && module_info->transformed_module != nullptr) {
+        CUfunction transformed = nullptr;
+        CUresult hidden_ret = Driver::ModuleGetFunction(&transformed, module_info->transformed_module, name);
+        if (hidden_ret == CUDA_SUCCESS && transformed != nullptr) {
+            info.transformed_function = transformed;
+        } else {
+            info.capability.splittable = false;
+            info.capability.fallback_reason = "TRANSFORMED_FUNCTION_NOT_FOUND";
+        }
+    } else if (info.capability.transform_succeeded) {
+        info.capability.splittable = false;
+        info.capability.fallback_reason = "TRANSFORMED_MODULE_UNAVAILABLE";
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_mu);
+        g_functions[function] = std::move(info);
+    }
+    result.ok = true;
+    result.reason = "OK";
+    result.ptx_bytes = module_info->ptx_bytes;
+    result.record_count = module_info->records.size();
+    return result;
+}
+
+CUmodule RemoveModuleInfo(CUmodule module)
+{
+    CUmodule transformed_module = nullptr;
+    std::lock_guard<std::mutex> lock(g_mu);
+    auto mod_it = g_modules.find(module);
+    if (mod_it != g_modules.end()) {
+        transformed_module = mod_it->second.transformed_module;
+        g_modules.erase(mod_it);
+    }
+    for (auto it = g_functions.begin(); it != g_functions.end();) {
+        if (it->second.original_module == module) {
+            it = g_functions.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    return transformed_module;
 }
 
 uint64_t Volume(Grid3D grid)
@@ -818,8 +933,8 @@ CUresult XModuleLoad(CUmodule *module, const char *fname)
     const CUresult ret = Driver::ModuleLoad(module, fname);
     if (ret != CUDA_SUCCESS || module == nullptr || *module == nullptr) return ret;
 
-    ModuleInfo info = TransformModulePtx(std::string(raw.data(), raw.data() + raw.size()));
-    RegisterModuleInfo(*module, std::move(info));
+    auto ptx = std::make_shared<const std::string>(raw.data(), raw.data() + raw.size());
+    RegisterModuleInfo(*module, TransformModulePtx(ptx));
     return ret;
 }
 
@@ -835,8 +950,8 @@ CUresult XModuleLoadData(CUmodule *module, const void *image)
     const CUresult ret = Driver::ModuleLoadData(module, image);
     if (ret != CUDA_SUCCESS || module == nullptr || *module == nullptr || nbytes == 0) return ret;
 
-    ModuleInfo info = TransformModulePtx(std::string(static_cast<const char *>(image), nbytes));
-    RegisterModuleInfo(*module, std::move(info));
+    auto ptx = std::make_shared<const std::string>(static_cast<const char *>(image), nbytes);
+    RegisterModuleInfo(*module, TransformModulePtx(ptx));
     return ret;
 }
 
@@ -853,34 +968,14 @@ CUresult XModuleLoadDataEx(CUmodule *module, const void *image, unsigned int num
     const CUresult ret = Driver::ModuleLoadDataEx(module, image, num_options, options, option_values);
     if (ret != CUDA_SUCCESS || module == nullptr || *module == nullptr || nbytes == 0) return ret;
 
-    ModuleInfo info = TransformModulePtx(std::string(static_cast<const char *>(image), nbytes));
-    if (info.transformed_module == nullptr) {
-        RegisterModuleInfo(*module, std::move(info));
-        return ret;
-    }
-
-    RegisterModuleInfo(*module, std::move(info));
+    auto ptx = std::make_shared<const std::string>(static_cast<const char *>(image), nbytes);
+    RegisterModuleInfo(*module, TransformModulePtx(ptx));
     return ret;
 }
 
 CUresult XModuleUnload(CUmodule module)
 {
-    CUmodule transformed_module = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_mu);
-        auto mod_it = g_modules.find(module);
-        if (mod_it != g_modules.end()) {
-            transformed_module = mod_it->second.transformed_module;
-            g_modules.erase(mod_it);
-        }
-        for (auto it = g_functions.begin(); it != g_functions.end();) {
-            if (it->second.original_module == module) {
-                it = g_functions.erase(it);
-            } else {
-                ++it;
-            }
-        }
-    }
+    CUmodule transformed_module = RemoveModuleInfo(module);
 
     if (transformed_module != nullptr) {
         preempt::XQueueManager::ForEachWaitAll();
@@ -899,33 +994,53 @@ CUresult XModuleGetFunction(CUfunction *function, CUmodule module, const char *n
     auto module_info = FindModuleInfo(module);
     if (!module_info) return ret;
 
-    auto rec_it = module_info->records.find(name);
-    if (rec_it == module_info->records.end()) return ret;
+    RegisterFunctionInfo(*function, module, name);
+    return ret;
+}
 
-    FunctionInfo info;
-    info.capability = rec_it->second.capability;
-    info.original_param_count = rec_it->second.original_param_count;
-    info.kernel_name = name;
-    info.original_module = module;
-    info.original_function = *function;
-
-    if (info.capability.transform_succeeded && module_info->transformed_module != nullptr) {
-        CUfunction transformed = nullptr;
-        CUresult hidden_ret = Driver::ModuleGetFunction(&transformed, module_info->transformed_module, name);
-        if (hidden_ret == CUDA_SUCCESS && transformed != nullptr) {
-            info.transformed_function = transformed;
-        } else {
-            info.capability.splittable = false;
-            info.capability.fallback_reason = "TRANSFORMED_FUNCTION_NOT_FOUND";
-        }
-    } else if (info.capability.transform_succeeded) {
-        info.capability.splittable = false;
-        info.capability.fallback_reason = "TRANSFORMED_MODULE_UNAVAILABLE";
+MetadataRegistrationResult RegisterModuleMetadata(CUmodule module, const void *ptx,
+                                                  size_t ptx_size)
+{
+    LogConfigOnce();
+    MetadataRegistrationResult result;
+    if (module == nullptr || ptx == nullptr || ptx_size == 0) {
+        result.reason = "RUNTIME_HB_MODULE_REGISTER_FAILED";
+        return result;
+    }
+    if (!LooksLikePtxText(ptx, ptx_size)) {
+        result.reason = "RUNTIME_HB_PTX_LIFETIME_INVALID";
+        return result;
     }
 
-    std::lock_guard<std::mutex> lock(g_mu);
-    g_functions[*function] = std::move(info);
-    return ret;
+    auto ptx_owner = std::make_shared<const std::string>(static_cast<const char *>(ptx), ptx_size);
+    result = RegisterModuleInfo(module, TransformModulePtx(ptx_owner));
+    return result;
+}
+
+MetadataRegistrationResult RegisterFunctionMetadata(CUfunction function, CUmodule module,
+                                                    const char *name)
+{
+    LogConfigOnce();
+    return RegisterFunctionInfo(function, module, name);
+}
+
+void UnregisterModuleMetadata(CUmodule module)
+{
+    CUmodule transformed_module = RemoveModuleInfo(module);
+    if (transformed_module != nullptr) {
+        preempt::XQueueManager::ForEachWaitAll();
+        (void)Driver::ModuleUnload(transformed_module);
+    }
+}
+
+bool LookupFunctionMetadata(CUfunction function, std::string *kernel_name,
+                            std::string *fallback_reason)
+{
+    auto info = FindFunctionInfo(function);
+    if (!info) return false;
+    if (kernel_name != nullptr) *kernel_name = info->kernel_name;
+    if (fallback_reason != nullptr) *fallback_reason = info->capability.fallback_reason;
+    return true;
 }
 
 bool TryLaunchKernelFixed(CUfunction function,

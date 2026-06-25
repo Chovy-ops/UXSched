@@ -37,12 +37,28 @@ struct KernelCapability
     std::string fallback_reason;
 };
 
+struct MetadataRegistrationResult
+{
+    bool ok = false;
+    std::string reason;
+    size_t ptx_bytes = 0;
+    size_t record_count = 0;
+};
+
 CUresult XModuleLoad(CUmodule *module, const char *fname);
 CUresult XModuleLoadData(CUmodule *module, const void *image);
 CUresult XModuleLoadDataEx(CUmodule *module, const void *image, unsigned int num_options,
                            CUjit_option *options, void **option_values);
 CUresult XModuleUnload(CUmodule module);
 CUresult XModuleGetFunction(CUfunction *function, CUmodule module, const char *name);
+
+MetadataRegistrationResult RegisterModuleMetadata(CUmodule module, const void *ptx,
+                                                  size_t ptx_size);
+MetadataRegistrationResult RegisterFunctionMetadata(CUfunction function, CUmodule module,
+                                                    const char *name);
+void UnregisterModuleMetadata(CUmodule module);
+bool LookupFunctionMetadata(CUfunction function, std::string *kernel_name,
+                            std::string *fallback_reason);
 
 bool TryLaunchKernel(CUfunction function,
                      unsigned int grid_dim_x, unsigned int grid_dim_y, unsigned int grid_dim_z,

@@ -109,6 +109,63 @@ rerun must observe `runtime_launch_intercepted_count > 0`,
 transformed child launches, no fallback, no `NO_XQUEUE`, and CUTLASS
 correctness before this phase can pass.
 
+## Runtime Metadata Bridge
+
+The first GPU rerun after Runtime launch/sync interception showed that Runtime
+fatbin/PTX extraction and `CUfunction` resolution worked, but HB backend launch
+selection still fell back with:
+
+```text
+function=<unknown>
+reason=PTX_UNAVAILABLE
+```
+
+The source-level cause was a metadata handoff gap between CUDA Runtime
+registration and the HB split backend registry. The HB backend only splits a
+`CUfunction` after it can find that function in its `g_functions` registry,
+which is normally populated by the Driver API `cuModuleGetFunction` hook. The
+Runtime bridge had resolved a real `CUfunction` but had not guaranteed that the
+same `CUmodule -> PTX` and `CUfunction -> kernel name` metadata was present in
+the HB registry before dispatching to `TryLaunchKernelFixed`.
+
+The bridge now explicitly performs:
+
+```text
+Runtime fatbin/PTX
+  -> Driver::ModuleLoadDataEx
+  -> hb_split::RegisterModuleMetadata
+  -> Driver::ModuleGetFunction
+  -> hb_split::RegisterFunctionMetadata
+  -> hb_split::TryLaunchKernelFixed
+```
+
+The HB registry owns a PTX copy for the module lifetime, so Runtime fatbin
+buffers or local extraction buffers are not used after registration. Runtime
+unregister unloads the Runtime-created module through `XModuleUnload`, removing
+module metadata, function metadata, and hidden transformed modules.
+
+The runner records:
+
+- `runtime_hb_module_registered_count`
+- `runtime_hb_function_registered_count`
+- `runtime_hb_registration_failed_count`
+- `runtime_hb_module_registration_pass`
+- `runtime_hb_function_registration_pass`
+- `runtime_hb_metadata_bridge_pass`
+
+The next GPU rerun should first prove:
+
+```text
+runtime_hb_module_registered_count > 0
+runtime_hb_function_registered_count > 0
+runtime_hb_metadata_bridge_pass=1
+```
+
+and should no longer show `function=<unknown>` with `PTX_UNAVAILABLE`. Any later
+fallback such as `KERNEL_NOT_VERIFIED`, `ENTRY_NOT_FOUND`,
+`OFFSET_Y_UNSUPPORTED`, `PARAM_COUNT_MISMATCH`, or `TRANSFORM_FAILED` is the
+next layer of CUTLASS transform compatibility, not the Runtime metadata bridge.
+
 ## `realtime_inference_latency.py` Call Graph
 
 Entry:

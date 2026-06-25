@@ -270,7 +270,7 @@ extract_case_evidence() {
     grep -hE "${pattern}" "${dir}/stdout.log" "${dir}/stderr.log" 2>/dev/null | wc -l | tr -d ' '
   }
 
-  grep -hE '\[UXSCHED-CUDART\].*(runtime_fatbin_registered|runtime_function_registered|runtime_launch_intercepted|runtime_launch_function_resolved|runtime_backend_selected|runtime_launch_fallback|runtime_sync_intercepted)' \
+  grep -hE '\[UXSCHED-CUDART\].*(runtime_fatbin_registered|runtime_function_registered|runtime_launch_intercepted|runtime_launch_function_resolved|runtime_hb_module_registered|runtime_hb_function_registered|runtime_backend_selected|runtime_launch_fallback|runtime_sync_intercepted)' \
     "${dir}/stdout.log" "${dir}/stderr.log" > "${dir}/runtime_registration.log" || true
   if [[ ! -s "${dir}/runtime_registration.log" ]]; then
     printf 'NO_RUNTIME_REGISTRATION_TRACE_OBSERVED\n' > "${dir}/runtime_registration.log"
@@ -287,6 +287,9 @@ extract_case_evidence() {
     printf 'runtime_function_resolved_count=%s\n' "$(count_logs '\[UXSCHED-CUDART\].*runtime_launch_function_resolved')"
     printf 'runtime_launch_fallback_count=%s\n' "$(count_logs '\[UXSCHED-CUDART\].*runtime_launch_fallback')"
     printf 'runtime_sync_intercepted_count=%s\n' "$(count_logs '\[UXSCHED-CUDART\].*runtime_sync_intercepted')"
+    printf 'runtime_hb_module_registered_count=%s\n' "$(count_logs '\[UXSCHED-CUDART\].*runtime_hb_module_registered.*result=OK')"
+    printf 'runtime_hb_function_registered_count=%s\n' "$(count_logs '\[UXSCHED-CUDART\].*runtime_hb_function_registered.*result=OK')"
+    printf 'runtime_hb_registration_failed_count=%s\n' "$(count_logs '\[UXSCHED-CUDART\].*runtime_hb_.*registered.*result=(RUNTIME_|[^O])')"
   } > "${dir}/uxsched_backend_stats.env"
 }
 
@@ -405,7 +408,7 @@ write_summary() {
   local summary="${OUT_DIR}/cutlass_probe_summary.env"
   local runtime_native_pass runtime_uxsched_native_pass runtime_hb_correctness
   local hb_transform hb_parent hb_child hb_transformed hb_fallback hb_noxq
-  local runtime_intercept runtime_resolved runtime_fallback runtime_sync
+  local runtime_intercept runtime_resolved runtime_fallback runtime_sync runtime_hb_module runtime_hb_function runtime_hb_reg_failed
   runtime_native_pass=0
   runtime_uxsched_native_pass=0
   runtime_hb_correctness=0
@@ -427,6 +430,9 @@ write_summary() {
   runtime_resolved="$(env_value "${OUT_DIR}/cutlass_uxsched_hb_fixed_runtime/uxsched_backend_stats.env" runtime_function_resolved_count)"
   runtime_fallback="$(env_value "${OUT_DIR}/cutlass_uxsched_hb_fixed_runtime/uxsched_backend_stats.env" runtime_launch_fallback_count)"
   runtime_sync="$(env_value "${OUT_DIR}/cutlass_uxsched_hb_fixed_runtime/uxsched_backend_stats.env" runtime_sync_intercepted_count)"
+  runtime_hb_module="$(env_value "${OUT_DIR}/cutlass_uxsched_hb_fixed_runtime/uxsched_backend_stats.env" runtime_hb_module_registered_count)"
+  runtime_hb_function="$(env_value "${OUT_DIR}/cutlass_uxsched_hb_fixed_runtime/uxsched_backend_stats.env" runtime_hb_function_registered_count)"
+  runtime_hb_reg_failed="$(env_value "${OUT_DIR}/cutlass_uxsched_hb_fixed_runtime/uxsched_backend_stats.env" runtime_hb_registration_failed_count)"
 
   local runtime_backend=0
   local runtime_not_intercepted=0
@@ -459,6 +465,21 @@ write_summary() {
     probe_pass=1
   fi
 
+  local module_reg_pass=0
+  local function_reg_pass=0
+  local metadata_bridge_pass=0
+  if [[ "${runtime_hb_module}" =~ ^[0-9]+$ && "${runtime_hb_module}" -gt 0 &&
+        "${runtime_hb_reg_failed}" == "0" ]]; then
+    module_reg_pass=1
+  fi
+  if [[ "${runtime_hb_function}" =~ ^[0-9]+$ && "${runtime_hb_function}" -gt 0 &&
+        "${runtime_hb_reg_failed}" == "0" ]]; then
+    function_reg_pass=1
+  fi
+  if [[ "${module_reg_pass}" == "1" && "${function_reg_pass}" == "1" ]]; then
+    metadata_bridge_pass=1
+  fi
+
   {
     printf 'cuda_toolkit_12_8=1\n'
     printf 'native_sm120_build_pass=%s\n' "$([[ -x "${PROBE}" ]] && printf 1 || printf 0)"
@@ -474,6 +495,12 @@ write_summary() {
     printf 'runtime_function_resolved_count=%s\n' "${runtime_resolved}"
     printf 'runtime_launch_fallback_count=%s\n' "${runtime_fallback}"
     printf 'runtime_sync_intercepted_count=%s\n' "${runtime_sync}"
+    printf 'runtime_hb_module_registered_count=%s\n' "${runtime_hb_module}"
+    printf 'runtime_hb_function_registered_count=%s\n' "${runtime_hb_function}"
+    printf 'runtime_hb_registration_failed_count=%s\n' "${runtime_hb_reg_failed}"
+    printf 'runtime_hb_module_registration_pass=%s\n' "${module_reg_pass}"
+    printf 'runtime_hb_function_registration_pass=%s\n' "${function_reg_pass}"
+    printf 'runtime_hb_metadata_bridge_pass=%s\n' "${metadata_bridge_pass}"
     printf 'runtime_hb_fixed_correctness_pass=%s\n' "${runtime_hb_correctness}"
     printf 'driver_mode_available=0\n'
     printf 'driver_native_correctness_pass=0\n'
