@@ -80,6 +80,9 @@ Implemented bridge:
 * Added UXSched-owned CUDA Runtime interception inside the existing
   `libshimcuda.so`; no second hook library is introduced.
 * Intercepts Runtime fatbin/function registration and `cudaLaunchKernel`.
+* Intercepts Runtime stream/event/device synchronization used by the CUTLASS
+  probe and routes them to existing UXSched Driver shim synchronization
+  wrappers.
 * Builds a host-stub to CUTLASS kernel metadata map from
   `__cudaRegisterFunction`.
 * Extracts plain PTX from the Runtime fatbin, then reuses existing
@@ -110,7 +113,9 @@ Static evidence:
 * `nm -D build-hb-cu128/platforms/cuda/libshimcuda.so` now exports
   `__cudaRegisterFatBinary`, `__cudaRegisterFatBinaryEnd`,
   `__cudaRegisterFunction`, `__cudaUnregisterFatBinary`,
-  `cudaLaunchKernel`, and `cudaLaunchKernelExC`.
+  `cudaLaunchKernel`, `cudaLaunchKernelExC`, `cudaStreamSynchronize`,
+  `cudaEventRecord`, `cudaEventSynchronize`, and related Runtime sync
+  wrappers.
 * `ldd build-cutlass-cu128/cutlass_launch_probe` shows shared `libcudart.so.12`.
 * `readelf -Ws` / `nm -D` show the probe imports the Runtime registration and
   launch symbols dynamically.

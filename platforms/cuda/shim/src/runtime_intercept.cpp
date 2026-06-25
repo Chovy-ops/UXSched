@@ -26,6 +26,46 @@
 #undef cudaLaunchKernelExC
 #endif
 
+#ifdef cudaDeviceSynchronize
+#undef cudaDeviceSynchronize
+#endif
+
+#ifdef cudaStreamSynchronize
+#undef cudaStreamSynchronize
+#endif
+
+#ifdef cudaStreamQuery
+#undef cudaStreamQuery
+#endif
+
+#ifdef cudaStreamWaitEvent
+#undef cudaStreamWaitEvent
+#endif
+
+#ifdef cudaStreamDestroy
+#undef cudaStreamDestroy
+#endif
+
+#ifdef cudaEventRecord
+#undef cudaEventRecord
+#endif
+
+#ifdef cudaEventRecordWithFlags
+#undef cudaEventRecordWithFlags
+#endif
+
+#ifdef cudaEventQuery
+#undef cudaEventQuery
+#endif
+
+#ifdef cudaEventSynchronize
+#undef cudaEventSynchronize
+#endif
+
+#ifdef cudaEventDestroy
+#undef cudaEventDestroy
+#endif
+
 namespace
 {
 
@@ -149,6 +189,18 @@ CudaLaunchKernelExCFn RealCudaLaunchKernelExC()
 {
     static CudaLaunchKernelExCFn fn = ResolveNext<CudaLaunchKernelExCFn>("cudaLaunchKernelExC");
     return fn;
+}
+
+cudaError_t RuntimeErrorFromCuResult(CUresult ret)
+{
+    if (ret == CUDA_SUCCESS) return cudaSuccess;
+    if (ret == CUDA_ERROR_NOT_READY) return cudaErrorNotReady;
+    if (ret == CUDA_ERROR_INVALID_HANDLE) return cudaErrorInvalidResourceHandle;
+    if (ret == CUDA_ERROR_INVALID_VALUE) return cudaErrorInvalidValue;
+    if (ret == CUDA_ERROR_INVALID_CONTEXT) return cudaErrorInvalidDevice;
+    if (ret == CUDA_ERROR_OUT_OF_MEMORY) return cudaErrorMemoryAllocation;
+    if (ret == CUDA_ERROR_NOT_SUPPORTED) return cudaErrorNotSupported;
+    return cudaErrorUnknown;
 }
 
 bool IsAsciiPtxByte(unsigned char c)
@@ -499,4 +551,84 @@ EXPORT_C_FUNC cudaError_t cudaLaunchKernelExC(const cudaLaunchConfig_t *config,
     CudaLaunchKernelExCFn real = RealCudaLaunchKernelExC();
     if (real == nullptr) return cudaErrorUnknown;
     return real(config, func, args);
+}
+
+EXPORT_C_FUNC cudaError_t cudaDeviceSynchronize()
+{
+    CUDART_TRACE("runtime_sync_intercepted api=cudaDeviceSynchronize");
+    return RuntimeErrorFromCuResult(xsched::cuda::XCtxSynchronize());
+}
+
+EXPORT_C_FUNC cudaError_t cudaStreamSynchronize(cudaStream_t stream)
+{
+    CUstream cu_stream = reinterpret_cast<CUstream>(stream);
+    CUDART_TRACE("runtime_sync_intercepted api=cudaStreamSynchronize stream=%p", cu_stream);
+    return RuntimeErrorFromCuResult(xsched::cuda::XStreamSynchronize(cu_stream));
+}
+
+EXPORT_C_FUNC cudaError_t cudaStreamQuery(cudaStream_t stream)
+{
+    CUstream cu_stream = reinterpret_cast<CUstream>(stream);
+    CUDART_TRACE("runtime_sync_intercepted api=cudaStreamQuery stream=%p", cu_stream);
+    return RuntimeErrorFromCuResult(xsched::cuda::XStreamQuery(cu_stream));
+}
+
+EXPORT_C_FUNC cudaError_t cudaStreamWaitEvent(cudaStream_t stream, cudaEvent_t event,
+                                              unsigned int flags)
+{
+    CUstream cu_stream = reinterpret_cast<CUstream>(stream);
+    CUevent cu_event = reinterpret_cast<CUevent>(event);
+    CUDART_TRACE("runtime_sync_intercepted api=cudaStreamWaitEvent stream=%p event=%p "
+                 "flags=%u",
+                 cu_stream, cu_event, flags);
+    return RuntimeErrorFromCuResult(xsched::cuda::XStreamWaitEvent(cu_stream, cu_event, flags));
+}
+
+EXPORT_C_FUNC cudaError_t cudaStreamDestroy(cudaStream_t stream)
+{
+    CUstream cu_stream = reinterpret_cast<CUstream>(stream);
+    CUDART_TRACE("runtime_sync_intercepted api=cudaStreamDestroy stream=%p", cu_stream);
+    return RuntimeErrorFromCuResult(xsched::cuda::XStreamDestroy(cu_stream));
+}
+
+EXPORT_C_FUNC cudaError_t cudaEventRecord(cudaEvent_t event, cudaStream_t stream)
+{
+    CUevent cu_event = reinterpret_cast<CUevent>(event);
+    CUstream cu_stream = reinterpret_cast<CUstream>(stream);
+    CUDART_TRACE("runtime_sync_intercepted api=cudaEventRecord event=%p stream=%p",
+                 cu_event, cu_stream);
+    return RuntimeErrorFromCuResult(xsched::cuda::XEventRecord(cu_event, cu_stream));
+}
+
+EXPORT_C_FUNC cudaError_t cudaEventRecordWithFlags(cudaEvent_t event, cudaStream_t stream,
+                                                   unsigned int flags)
+{
+    CUevent cu_event = reinterpret_cast<CUevent>(event);
+    CUstream cu_stream = reinterpret_cast<CUstream>(stream);
+    CUDART_TRACE("runtime_sync_intercepted api=cudaEventRecordWithFlags event=%p "
+                 "stream=%p flags=%u",
+                 cu_event, cu_stream, flags);
+    return RuntimeErrorFromCuResult(
+        xsched::cuda::XEventRecordWithFlags(cu_event, cu_stream, flags));
+}
+
+EXPORT_C_FUNC cudaError_t cudaEventQuery(cudaEvent_t event)
+{
+    CUevent cu_event = reinterpret_cast<CUevent>(event);
+    CUDART_TRACE("runtime_sync_intercepted api=cudaEventQuery event=%p", cu_event);
+    return RuntimeErrorFromCuResult(xsched::cuda::XEventQuery(cu_event));
+}
+
+EXPORT_C_FUNC cudaError_t cudaEventSynchronize(cudaEvent_t event)
+{
+    CUevent cu_event = reinterpret_cast<CUevent>(event);
+    CUDART_TRACE("runtime_sync_intercepted api=cudaEventSynchronize event=%p", cu_event);
+    return RuntimeErrorFromCuResult(xsched::cuda::XEventSynchronize(cu_event));
+}
+
+EXPORT_C_FUNC cudaError_t cudaEventDestroy(cudaEvent_t event)
+{
+    CUevent cu_event = reinterpret_cast<CUevent>(event);
+    CUDART_TRACE("runtime_sync_intercepted api=cudaEventDestroy event=%p", cu_event);
+    return RuntimeErrorFromCuResult(xsched::cuda::XEventDestroy(cu_event));
 }

@@ -62,6 +62,9 @@ cudaLaunchKernel
   -> resolve/create stream XQueue
   -> call TryLaunchKernelFixed for HB_FIXED
   -> otherwise call true cudaLaunchKernel fallback
+cudaStreamSynchronize / cudaEventRecord / cudaEventSynchronize / cudaDeviceSynchronize
+  -> route to existing UXSched XStream/XEvent/XCtx synchronization wrappers
+  -> wait for queued split children before correctness/timing boundaries complete
 ```
 
 Safe fallback is required for unavailable PTX, missing registration, unverified
@@ -77,6 +80,7 @@ real CUDA Runtime launch and preserve correctness.
 - `runtime_launch_function_resolved`
 - `runtime_backend_selected`
 - `runtime_launch_fallback`
+- `runtime_sync_intercepted`
 
 The CUTLASS probe build is now pinned to:
 
@@ -97,11 +101,13 @@ The updated runner saves:
 - per-case `runtime_registration.log`
 - per-case Runtime/HB backend counters
 - `discovered_cutlass_kernel_name` in `cutlass_probe_summary.env`
+- `runtime_sync_intercepted_count` in `cutlass_probe_summary.env`
 
 The Runtime bridge is currently compile/static verified only. A normal WSL GPU
 rerun must observe `runtime_launch_intercepted_count > 0`,
-`runtime_function_resolved_count > 0`, transformed child launches, no fallback,
-no `NO_XQUEUE`, and CUTLASS correctness before this phase can pass.
+`runtime_function_resolved_count > 0`, `runtime_sync_intercepted_count > 0`,
+transformed child launches, no fallback, no `NO_XQUEUE`, and CUTLASS
+correctness before this phase can pass.
 
 ## `realtime_inference_latency.py` Call Graph
 

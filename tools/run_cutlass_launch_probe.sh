@@ -270,7 +270,7 @@ extract_case_evidence() {
     grep -hE "${pattern}" "${dir}/stdout.log" "${dir}/stderr.log" 2>/dev/null | wc -l | tr -d ' '
   }
 
-  grep -hE '\[UXSCHED-CUDART\].*(runtime_fatbin_registered|runtime_function_registered|runtime_launch_intercepted|runtime_launch_function_resolved|runtime_backend_selected|runtime_launch_fallback)' \
+  grep -hE '\[UXSCHED-CUDART\].*(runtime_fatbin_registered|runtime_function_registered|runtime_launch_intercepted|runtime_launch_function_resolved|runtime_backend_selected|runtime_launch_fallback|runtime_sync_intercepted)' \
     "${dir}/stdout.log" "${dir}/stderr.log" > "${dir}/runtime_registration.log" || true
   if [[ ! -s "${dir}/runtime_registration.log" ]]; then
     printf 'NO_RUNTIME_REGISTRATION_TRACE_OBSERVED\n' > "${dir}/runtime_registration.log"
@@ -286,6 +286,7 @@ extract_case_evidence() {
     printf 'runtime_launch_intercepted_count=%s\n' "$(count_logs '\[UXSCHED-CUDART\].*runtime_launch_intercepted')"
     printf 'runtime_function_resolved_count=%s\n' "$(count_logs '\[UXSCHED-CUDART\].*runtime_launch_function_resolved')"
     printf 'runtime_launch_fallback_count=%s\n' "$(count_logs '\[UXSCHED-CUDART\].*runtime_launch_fallback')"
+    printf 'runtime_sync_intercepted_count=%s\n' "$(count_logs '\[UXSCHED-CUDART\].*runtime_sync_intercepted')"
   } > "${dir}/uxsched_backend_stats.env"
 }
 
@@ -404,7 +405,7 @@ write_summary() {
   local summary="${OUT_DIR}/cutlass_probe_summary.env"
   local runtime_native_pass runtime_uxsched_native_pass runtime_hb_correctness
   local hb_transform hb_parent hb_child hb_transformed hb_fallback hb_noxq
-  local runtime_intercept runtime_resolved runtime_fallback
+  local runtime_intercept runtime_resolved runtime_fallback runtime_sync
   runtime_native_pass=0
   runtime_uxsched_native_pass=0
   runtime_hb_correctness=0
@@ -425,6 +426,7 @@ write_summary() {
   runtime_intercept="$(env_value "${OUT_DIR}/cutlass_uxsched_hb_fixed_runtime/uxsched_backend_stats.env" runtime_launch_intercepted_count)"
   runtime_resolved="$(env_value "${OUT_DIR}/cutlass_uxsched_hb_fixed_runtime/uxsched_backend_stats.env" runtime_function_resolved_count)"
   runtime_fallback="$(env_value "${OUT_DIR}/cutlass_uxsched_hb_fixed_runtime/uxsched_backend_stats.env" runtime_launch_fallback_count)"
+  runtime_sync="$(env_value "${OUT_DIR}/cutlass_uxsched_hb_fixed_runtime/uxsched_backend_stats.env" runtime_sync_intercepted_count)"
 
   local runtime_backend=0
   local runtime_not_intercepted=0
@@ -471,6 +473,7 @@ write_summary() {
     printf 'runtime_launch_intercepted_count=%s\n' "${runtime_intercept}"
     printf 'runtime_function_resolved_count=%s\n' "${runtime_resolved}"
     printf 'runtime_launch_fallback_count=%s\n' "${runtime_fallback}"
+    printf 'runtime_sync_intercepted_count=%s\n' "${runtime_sync}"
     printf 'runtime_hb_fixed_correctness_pass=%s\n' "${runtime_hb_correctness}"
     printf 'driver_mode_available=0\n'
     printf 'driver_native_correctness_pass=0\n'
