@@ -914,7 +914,17 @@ Phase 7: Global HP+LP HB_FIXED
 Phase 8: split-size sweep
 
 - Only after Phase 7 passes.
-- Sweep `UXSCHED_HB_SPLIT_BLOCKS`, for example `128,256,512,1024`.
+- The current fixed experiment setting is `UXSCHED_HB_SPLIT_BLOCKS=52` for the
+  RTX 5060 Laptop GPU and the SM120 FP32 SIMT CUTLASS GEMM kernel.
+- This value comes from the Hummingbird hardware formula: 26 SMs times 2 active
+  CUTLASS blocks per SM, where the resident block count is register-limited.
+- repeat=3 testing showed split=52 reduced HB HP P99 by 7.76% relative to
+  split=64 and improved LP throughput by 10.54% relative to split=64.
+- This is a fixed benchmark configuration, not automatic split selection and
+  not runtime profiling.
+- The selected value is not a global optimum for other GPUs, other CUTLASS
+  kernels, or other shapes.
+- Additional sweeps may be run after correctness and fairness checks pass.
 - Do not change workload or arrival model.
 
 Phase 9: formal repeat
@@ -991,5 +1001,7 @@ FAIL:
 - CUTLASS compatibility/correctness gate: PASS in user GPU testing.
 - Runtime metadata bridge to HB backend: PASS in user GPU testing.
 - CUTLASS HP/LP realtime benchmark: IMPLEMENTED and COMPILE VERIFIED in Codex.
+- CUTLASS fixed HB split size for the current formal experiment: 52 blocks.
+  Source: Hummingbird hardware formula plus repeat=3 endpoint validation.
 - repeat=1 GPU smoke: waiting for user manual WSL GPU execution.
-- repeat=3/5 final P99 benchmark: not started.
+- repeat=5 final P99 benchmark: not started.

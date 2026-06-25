@@ -15,16 +15,17 @@ WARMUP=5
 HP_REQUESTS=20
 HP_PERIOD_US=30000
 LP_DURATION_MS=1500
-SPLIT_BLOCKS=64
+SPLIT_BLOCKS=52
 REPEAT=1
 SYSTEMS="standalone_hp,uxsched_native_hp_lp,uxsched_hb_fixed_hp_lp"
 VERIFIED_KERNEL_FILE="${ROOT}/benchmarks/cutlass/verified_kernel_sm120_fp32_simt.txt"
 BARRIER_TIMEOUT_MS=180000
+COOLDOWN_SEC=5
 PIDS=()
 XSERVER_PID=""
 
 usage() {
-  printf 'Usage: %s --output-dir DIR [--uxsched-build DIR] [--cutlass-build DIR] [--m N] [--n N] [--k N] [--warmup N] [--hp-requests N] [--hp-period-us US] [--lp-duration-ms MS] [--split-blocks N] [--verified-kernel-file PATH] [--repeat N] [--systems LIST]\n' "$0"
+  printf 'Usage: %s --output-dir DIR [--uxsched-build DIR] [--cutlass-build DIR] [--m N] [--n N] [--k N] [--warmup N] [--hp-requests N] [--hp-period-us US] [--lp-duration-ms MS] [--split-blocks N] [--verified-kernel-file PATH] [--repeat N] [--systems LIST] [--cooldown-sec N]\n' "$0"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -46,6 +47,7 @@ while [[ $# -gt 0 ]]; do
     --verified-kernel-file) VERIFIED_KERNEL_FILE="$2"; shift 2 ;;
     --repeat) REPEAT="$2"; shift 2 ;;
     --systems) SYSTEMS="$2"; shift 2 ;;
+    --cooldown-sec) COOLDOWN_SEC="$2"; shift 2 ;;
     --help|-h) usage; exit 0 ;;
     *) printf 'unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -109,6 +111,7 @@ write_metadata() {
     printf 'm=%s\nn=%s\nk=%s\n' "${M}" "${N}" "${K}"
     printf 'warmup=%s\nhp_requests=%s\nhp_period_us=%s\n' "${WARMUP}" "${HP_REQUESTS}" "${HP_PERIOD_US}"
     printf 'lp_duration_ms=%s\nsplit_blocks=%s\nrepeat=%s\n' "${LP_DURATION_MS}" "${SPLIT_BLOCKS}" "${REPEAT}"
+    printf 'cooldown_sec=%s\n' "${COOLDOWN_SEC}"
     printf 'systems=%s\n' "${SYSTEMS}"
     printf 'verified_kernel_file=%s\n' "${VERIFIED_KERNEL_FILE}"
   } > "${file}"
@@ -122,7 +125,12 @@ read_verified_kernel() {
   if [[ ! -f "${VERIFIED_KERNEL_FILE}" ]]; then
     return 1
   fi
-  grep -v '^[[:space:]]*#' "${VERIFIED_KERNEL_FILE}" | grep -v '^[[:space:]]*$' | head -n 1
+  local kernel
+  kernel="$(grep -v '^[[:space:]]*#' "${VERIFIED_KERNEL_FILE}" | grep -v '^[[:space:]]*$' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | head -n 1)"
+  if [[ -z "${kernel}" || "${kernel}" == "*" ]]; then
+    return 1
+  fi
+  printf '%s\n' "${kernel}"
 }
 
 write_worker_env() {
@@ -415,10 +423,21 @@ fi
 
 run_status=0
 IFS=',' read -r -a system_list <<< "${SYSTEMS}"
-for system in "${system_list[@]}"; do
-  for ((r = 0; r < REPEAT; ++r)); do
+system_count="${#system_list[@]}"
+for ((r = 0; r < REPEAT; ++r)); do
+  order=()
+  for ((i = 0; i < system_count; ++i)); do
+    idx=$(( (system_count - (r % system_count) + i) % system_count ))
+    order+=("${system_list[$idx]}")
+  done
+  printf 'repeat_%s_case_order=%s\n' "${r}" "$(IFS=,; printf '%s' "${order[*]}")" >> "${OUT_DIR}/metadata.env"
+  for ((i = 0; i < system_count; ++i)); do
+    system="${order[$i]}"
     if ! run_case "${system}" "${r}"; then
       run_status=1
+    fi
+    if (( i + 1 < system_count )) && [[ "${COOLDOWN_SEC}" != "0" ]]; then
+      sleep "${COOLDOWN_SEC}"
     fi
   done
 done

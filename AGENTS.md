@@ -97,6 +97,13 @@ Before making any P99 improvement claim, prove all of the following:
 - `repeat=1` runs are smoke tests only and must not be used for a final P99
   improvement claim.
 
+For the current RTX 5060 Laptop GPU and SM120 FP32 SIMT CUTLASS GEMM kernel,
+the recommended fixed HB split size is `52` blocks. This comes from the
+Hummingbird hardware formula using 26 SMs and 2 resident CUTLASS blocks per SM,
+then repeat=3 end-to-end validation against split size 64. This is not automatic
+split selection, not runtime profiling, and not a global optimum for other GPUs
+or kernels.
+
 ### Git Rules
 
 - Work on `feature/hummingbird-split-backend`.

@@ -491,5 +491,13 @@ because transformed code is loaded into a hidden module.
 - HB_FIXED realtime measurement requires an exact verified CUTLASS kernel name
   in `benchmarks/cutlass/verified_kernel_sm120_fp32_simt.txt`; wildcard
   verification is not allowed for formal measurement.
+- The current fixed split setting for the formal CUTLASS realtime experiment is
+  `UXSCHED_HB_SPLIT_BLOCKS=52`.
+  - Source: Hummingbird hardware formula on RTX 5060 Laptop GPU, using 26 SMs
+    and 2 active CUTLASS blocks per SM for the current SM120 FP32 SIMT GEMM.
+  - User repeat=3 testing found split=52 reduced HB HP P99 by 7.76% versus
+    split=64 and improved LP throughput by 10.54% versus split=64.
+  - This is not automatic split selection, not runtime profiling, and not a
+    global optimum for other GPUs or kernels.
 - repeat=1 GPU smoke: NOT TESTED in Codex, waiting for user WSL GPU run.
-- repeat=3/5 final P99 experiment: NOT TESTED and not started.
+- repeat=5 final P99 experiment: NOT TESTED and not started.

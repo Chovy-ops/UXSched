@@ -656,6 +656,33 @@ GEMM workload. Do not download CUTLASS automatically; use a user-provided
 
 ## Session completion checklist
 
+2026-06-25 CUTLASS fixed split and summary formatting update:
+
+* User GPU testing compared `UXSCHED_HB_SPLIT_BLOCKS=52` and `64` with
+  repeat=3 on RTX 5060 Laptop GPU for the SM120 FP32 SIMT CUTLASS GEMM kernel.
+* Resource model:
+  * 26 SMs;
+  * 256 CUTLASS threads/block;
+  * 128 registers/thread;
+  * register limit gives 2 active CUTLASS blocks per SM;
+  * Hummingbird hardware formula gives `26 * 2 = 52` blocks.
+* Measured split=52 versus split=64:
+  * HB HP P99 lowered by 7.76%;
+  * HB LP throughput improved by 10.54%;
+  * split=52 HB HP P99 range and LP throughput range did not overlap with
+    split=64 in the reported repeat=3 runs.
+* Updated the CUTLASS realtime benchmark default split blocks to `52`.
+* This is a fixed configuration for the current hardware/kernel, not automatic
+  split selection, not runtime profiling, and not a global optimum.
+* Updated `tools/summarize_cutlass_realtime_compare.py` so `comparison.csv`
+  includes per-repeat paired ratio rows with repeat IDs and aggregate rows over
+  paired repeat ratios.
+* Added `hp_p99_reduction_pct`, `lp_throughput_retention_pct`, and
+  `lp_throughput_loss_pct` ratio metrics.
+* Updated `tools/run_cutlass_realtime_compare.sh` with deterministic repeat
+  case-order rotation and configurable cooldown, default 5 seconds.
+* Codex did not run the real GPU benchmark.
+
 2026-06-25 CUTLASS realtime HP/LP benchmark implementation:
 
 * Added `benchmarks/cutlass/cutlass_realtime_worker.cu`.

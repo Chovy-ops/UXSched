@@ -162,6 +162,10 @@ def numeric(row, key):
         return 0.0
 
 
+def valid_row(row):
+    return str(row.get("status")) in ("COMPLETE", "RAN")
+
+
 def stdev(values):
     if len(values) <= 1:
         return 0.0
@@ -175,11 +179,12 @@ def aggregate_rows(summary_rows):
     for system in systems:
         rows = [r for r in summary_rows if r["system"] == system]
         for metric in ("hp_p99_us", "hp_p95_us", "hp_mean_us", "lp_throughput_rps"):
-            values = [numeric(r, metric) for r in rows if str(r.get("status")) in ("COMPLETE", "RAN")]
+            values = [numeric(r, metric) for r in rows if valid_row(r)]
             if not values:
                 continue
             out.append({
                 "kind": "aggregate",
+                "repeat": "",
                 "system": system,
                 "metric": metric,
                 "repeat_count": len(values),
@@ -191,36 +196,64 @@ def aggregate_rows(summary_rows):
                 "value": "",
             })
 
-    native = {r["repeat"]: r for r in summary_rows if r["system"] == "uxsched_native_hp_lp"}
-    hb = {r["repeat"]: r for r in summary_rows if r["system"] == "uxsched_hb_fixed_hp_lp"}
+    native = {r["repeat"]: r for r in summary_rows
+              if r["system"] == "uxsched_native_hp_lp" and valid_row(r)}
+    hb = {r["repeat"]: r for r in summary_rows
+          if r["system"] == "uxsched_hb_fixed_hp_lp" and valid_row(r)}
+    ratio_values = {
+        "hp_p99_ratio": [],
+        "hp_p99_reduction_pct": [],
+        "lp_throughput_ratio": [],
+        "lp_throughput_retention_pct": [],
+        "lp_throughput_loss_pct": [],
+    }
     for repeat in sorted(set(native) & set(hb)):
         native_p99 = numeric(native[repeat], "hp_p99_us")
         hb_p99 = numeric(hb[repeat], "hp_p99_us")
         native_lp = numeric(native[repeat], "lp_throughput_rps")
         hb_lp = numeric(hb[repeat], "lp_throughput_rps")
+        paired = {}
+        if native_p99 > 0:
+            hp_ratio = hb_p99 / native_p99
+            paired["hp_p99_ratio"] = hp_ratio
+            paired["hp_p99_reduction_pct"] = (1.0 - hp_ratio) * 100.0
+        if native_lp > 0:
+            lp_ratio = hb_lp / native_lp
+            paired["lp_throughput_ratio"] = lp_ratio
+            paired["lp_throughput_retention_pct"] = lp_ratio * 100.0
+            paired["lp_throughput_loss_pct"] = (1.0 - lp_ratio) * 100.0
+
+        for metric, value in paired.items():
+            ratio_values[metric].append(value)
+            out.append({
+                "kind": "ratio_repeat",
+                "repeat": repeat,
+                "system": "uxsched_hb_fixed_hp_lp/uxsched_native_hp_lp",
+                "metric": metric,
+                "repeat_count": 1,
+                "mean": "",
+                "median": "",
+                "min": "",
+                "max": "",
+                "stddev": "",
+                "value": value,
+            })
+
+    for metric, values in ratio_values.items():
+        if not values:
+            continue
         out.append({
-            "kind": "ratio",
+            "kind": "ratio_aggregate",
+            "repeat": "",
             "system": "uxsched_hb_fixed_hp_lp/uxsched_native_hp_lp",
-            "metric": "hp_p99_ratio",
-            "repeat_count": 1,
-            "mean": "",
-            "median": "",
-            "min": "",
-            "max": "",
-            "stddev": "",
-            "value": hb_p99 / native_p99 if native_p99 > 0 else "",
-        })
-        out.append({
-            "kind": "ratio",
-            "system": "uxsched_hb_fixed_hp_lp/uxsched_native_hp_lp",
-            "metric": "lp_throughput_ratio",
-            "repeat_count": 1,
-            "mean": "",
-            "median": "",
-            "min": "",
-            "max": "",
-            "stddev": "",
-            "value": hb_lp / native_lp if native_lp > 0 else "",
+            "metric": metric,
+            "repeat_count": len(values),
+            "mean": mean(values),
+            "median": median(values),
+            "min": min(values),
+            "max": max(values),
+            "stddev": stdev(values),
+            "value": "",
         })
     return out
 
@@ -239,7 +272,7 @@ def run(result_dir):
     write_csv(result_dir / "summary.csv", summary_rows, SUMMARY_FIELDS)
     comparison_rows = aggregate_rows(summary_rows)
     write_csv(result_dir / "comparison.csv", comparison_rows,
-              ["kind", "system", "metric", "repeat_count", "mean", "median", "min", "max", "stddev", "value"])
+              ["kind", "repeat", "system", "metric", "repeat_count", "mean", "median", "min", "max", "stddev", "value"])
     return 0
 
 
@@ -250,6 +283,39 @@ def self_test():
     assert truthy(True)
     assert truthy("1")
     assert not truthy("0")
+    rows = [
+        {"system": "uxsched_native_hp_lp", "repeat": "0", "status": "COMPLETE",
+         "hp_p99_us": 100.0, "lp_throughput_rps": 200.0},
+        {"system": "uxsched_hb_fixed_hp_lp", "repeat": "0", "status": "COMPLETE",
+         "hp_p99_us": 50.0, "lp_throughput_rps": 100.0},
+        {"system": "uxsched_native_hp_lp", "repeat": "1", "status": "COMPLETE",
+         "hp_p99_us": 100.0, "lp_throughput_rps": 200.0},
+        {"system": "uxsched_hb_fixed_hp_lp", "repeat": "1", "status": "COMPLETE",
+         "hp_p99_us": 60.0, "lp_throughput_rps": 120.0},
+        {"system": "uxsched_native_hp_lp", "repeat": "2", "status": "COMPLETE",
+         "hp_p99_us": 100.0, "lp_throughput_rps": 200.0},
+        {"system": "uxsched_hb_fixed_hp_lp", "repeat": "2", "status": "COMPLETE",
+         "hp_p99_us": 70.0, "lp_throughput_rps": 140.0},
+        {"system": "uxsched_native_hp_lp", "repeat": "3", "status": "COMPLETE",
+         "hp_p99_us": 100.0, "lp_throughput_rps": 200.0},
+        {"system": "uxsched_hb_fixed_hp_lp", "repeat": "3", "status": "FAILED",
+         "hp_p99_us": 1.0, "lp_throughput_rps": 1.0},
+        {"system": "uxsched_hb_fixed_hp_lp", "repeat": "4", "status": "COMPLETE",
+         "hp_p99_us": 1.0, "lp_throughput_rps": 1.0},
+    ]
+    comparison = aggregate_rows(rows)
+    hp_repeat = [r for r in comparison if r["kind"] == "ratio_repeat" and r["metric"] == "hp_p99_ratio"]
+    assert [r["repeat"] for r in hp_repeat] == ["0", "1", "2"]
+    assert [r["value"] for r in hp_repeat] == [0.5, 0.6, 0.7]
+    hp_agg = [r for r in comparison if r["kind"] == "ratio_aggregate" and r["metric"] == "hp_p99_ratio"][0]
+    assert hp_agg["repeat_count"] == 3
+    assert abs(hp_agg["mean"] - 0.6) < 1e-12
+    assert abs(hp_agg["median"] - 0.6) < 1e-12
+    assert abs(hp_agg["min"] - 0.5) < 1e-12
+    assert abs(hp_agg["max"] - 0.7) < 1e-12
+    assert abs(hp_agg["stddev"] - 0.1) < 1e-12
+    reduction = [r for r in comparison if r["kind"] == "ratio_repeat" and r["metric"] == "hp_p99_reduction_pct"]
+    assert [r["value"] for r in reduction] == [50.0, 40.0, 30.000000000000004]
 
 
 def main():
