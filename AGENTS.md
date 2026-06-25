@@ -94,6 +94,8 @@ Before making any P99 improvement claim, prove all of the following:
 - The benchmark uses at least `repeat=3`.
 - No advantage is obtained by changing workload, reducing computation, skipping
   kernels, or changing measurement boundaries.
+- `repeat=1` runs are smoke tests only and must not be used for a final P99
+  improvement claim.
 
 ### Git Rules
 

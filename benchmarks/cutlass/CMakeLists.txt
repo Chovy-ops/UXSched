@@ -35,31 +35,39 @@ if(CUTLASS_GIT_REVISION STREQUAL "")
   set(CUTLASS_GIT_REVISION "unknown")
 endif()
 
+function(configure_uxsched_cutlass_target target)
+  target_include_directories(${target} PRIVATE
+    "${CUTLASS_ROOT}/include"
+    "${CUTLASS_ROOT}/tools/util/include"
+  )
+
+  target_compile_definitions(${target} PRIVATE
+    CUTLASS_GIT_REVISION="${CUTLASS_GIT_REVISION}"
+    UXSCHED_CUTLASS_NATIVE_SM120=1
+    CUTLASS_ENABLE_CUDA_HOST_ADAPTER=0
+  )
+
+  target_compile_options(${target} PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+    $<$<COMPILE_LANGUAGE:CUDA>:--compress-mode=none>
+  )
+
+  target_link_libraries(${target} PRIVATE CUDA::cudart)
+
+  set_target_properties(${target} PROPERTIES
+    CUDA_ARCHITECTURES "120-real;120-virtual"
+    CUDA_RUNTIME_LIBRARY Shared
+    CUDA_SEPARABLE_COMPILATION OFF
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+  )
+endfunction()
+
 add_executable(cutlass_launch_probe
   cutlass_launch_probe.cu
 )
+configure_uxsched_cutlass_target(cutlass_launch_probe)
 
-target_include_directories(cutlass_launch_probe PRIVATE
-  "${CUTLASS_ROOT}/include"
-  "${CUTLASS_ROOT}/tools/util/include"
+add_executable(cutlass_realtime_worker
+  cutlass_realtime_worker.cu
 )
-
-target_compile_definitions(cutlass_launch_probe PRIVATE
-  CUTLASS_GIT_REVISION="${CUTLASS_GIT_REVISION}"
-  UXSCHED_CUTLASS_NATIVE_SM120=1
-  CUTLASS_ENABLE_CUDA_HOST_ADAPTER=0
-)
-
-target_compile_options(cutlass_launch_probe PRIVATE
-  $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
-  $<$<COMPILE_LANGUAGE:CUDA>:--compress-mode=none>
-)
-
-target_link_libraries(cutlass_launch_probe PRIVATE CUDA::cudart)
-
-set_target_properties(cutlass_launch_probe PROPERTIES
-  CUDA_ARCHITECTURES "120-real;120-virtual"
-  CUDA_RUNTIME_LIBRARY Shared
-  CUDA_SEPARABLE_COMPILATION OFF
-  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-)
+configure_uxsched_cutlass_target(cutlass_realtime_worker)

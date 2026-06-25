@@ -656,6 +656,46 @@ GEMM workload. Do not download CUTLASS automatically; use a user-provided
 
 ## Session completion checklist
 
+2026-06-25 CUTLASS realtime HP/LP benchmark implementation:
+
+* Added `benchmarks/cutlass/cutlass_realtime_worker.cu`.
+  * Uses the same conservative FP32 SIMT SM120 CUTLASS GEMM configuration as
+    the compatibility probe.
+  * Creates one explicit CUDA stream, allocates/copies buffers once, initializes
+    the CUTLASS GEMM object once, warms up before measurement, and emits JSONL.
+  * HP mode schedules requests against absolute monotonic release times.
+  * LP mode submits the same GEMM until duration or fixed request count.
+  * Correctness is checked outside the formal measurement window and records
+    checksum, output hash, element count, max abs/rel error, mismatch, NaN, and
+    Inf counts.
+  * File-based ready/start barriers prevent fixed-sleep benchmark start.
+* Added `tools/run_cutlass_realtime_compare.sh`.
+  * Supports `standalone_hp`, `uxsched_native_hp_lp`, and
+    `uxsched_hb_fixed_hp_lp`.
+  * Uses one worker binary for Native and HB_FIXED systems.
+  * Starts UXSched Global HPF xserver for HP/LP systems.
+  * Uses HP priority `10`, LP priority `-10`, `XSCHED_SCHEDULER=GLB`,
+    `XSCHED_AUTO_XQUEUE=ON`, and the single UXSched CUDA shim.
+  * Requires an exact HB verified-kernel allowlist for HB_FIXED; it does not use
+    wildcard verification for realtime measurement.
+  * Records counter snapshots around `UXSCHED_CUTLASS_PHASE=MEASUREMENT_START`
+    markers and computes measurement deltas.
+* Added `tools/summarize_cutlass_realtime_compare.py`.
+  * Generates `summary.csv` and `comparison.csv` without pandas.
+  * Uses sorted linear interpolation for P50/P95/P99 to match the original
+    realtime benchmark semantics.
+* Added `benchmarks/cutlass/verified_kernel_sm120_fp32_simt.txt` as a strict
+  allowlist template. The user must fill the exact discovered CUTLASS kernel
+  name before running the HB_FIXED realtime smoke.
+* Static validation passed:
+  * `bash -n tools/run_cutlass_realtime_compare.sh`
+  * `python3 -m py_compile tools/summarize_cutlass_realtime_compare.py`
+  * `python3 tools/summarize_cutlass_realtime_compare.py --self-test`
+  * `cmake --build build-hb-cu128 --target halcuda shimcuda xserver -j2`
+  * `tools/build_cutlass_launch_probe.sh --build-dir build-cutlass-cu128 ...`
+* Codex did not run the real GPU realtime benchmark and made no P99 performance
+  claim.
+
 2026-06-25 project rule update:
 
 * Updated `AGENTS.md` with the final CUTLASS realtime benchmark objective and

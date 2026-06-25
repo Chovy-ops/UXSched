@@ -74,7 +74,7 @@ CONFIGURE_CMD=(
   -DCMAKE_BUILD_TYPE=Release
 )
 BUILD_CMD=(
-  cmake --build "${BUILD_DIR}" --target cutlass_launch_probe -j2
+  cmake --build "${BUILD_DIR}" --target cutlass_launch_probe cutlass_realtime_worker -j2
 )
 
 {
@@ -86,6 +86,7 @@ BUILD_CMD=(
   printf 'CMAKE_CUDA_ARCHITECTURES=%s\n' "${ARCH}"
   printf 'CUTLASS_MODE=NATIVE_SM120\n'
   printf 'PROBE_BINARY=%s\n' "${BUILD_DIR}/cutlass_launch_probe"
+  printf 'REALTIME_WORKER_BINARY=%s\n' "${BUILD_DIR}/cutlass_realtime_worker"
 } > "${BUILD_DIR}/build_info.env"
 
 printf '%q ' "${CONFIGURE_CMD[@]}" > "${BUILD_DIR}/configure_command.txt"
@@ -98,3 +99,4 @@ printf '\n' >> "${BUILD_DIR}/build_command.txt"
 
 printf 'build_pass=1\n' > "${BUILD_DIR}/status.env"
 printf '%s\n' "${BUILD_DIR}/cutlass_launch_probe"
+printf '%s\n' "${BUILD_DIR}/cutlass_realtime_worker"

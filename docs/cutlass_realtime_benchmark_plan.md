@@ -962,14 +962,34 @@ FAIL:
 
 ## Next Implementation Steps
 
-1. Add CUTLASS dependency plumbing without downloading in Codex:
-   support `CUTLASS_ROOT` and optionally `3rdparty/cutlass`.
-2. Add a CMake target for `benchmarks/cutlass/cutlass_realtime_gemm.cu`.
-3. Implement deterministic GEMM initialization, CPU reference, error metrics,
-   hash, and JSONL output.
-4. Add HP/LP role modes and fixed-period HP request pacing.
-5. Add single-process correctness and sync runner.
-6. Add Global HPF runner for Native vs HB_FIXED with identical inputs.
-7. Validate transformability and update `UXSCHED_HB_VERIFIED_KERNELS` only after
-   the exact CUTLASS LP kernel name is known.
-8. Only after correctness and split evidence pass, run Phase 6/7 P99 comparison.
+1. CUTLASS dependency plumbing is implemented through external `CUTLASS_ROOT`;
+   no CUTLASS source is copied into UXSched.
+2. `benchmarks/cutlass/cutlass_realtime_worker.cu` implements the first
+   dual-process realtime worker with deterministic FP32 SIMT GEMM inputs,
+   correctness metrics, JSONL output, explicit CUDA stream, HP fixed-period
+   pacing, LP steady submission, and file-based ready/start barriers.
+3. `tools/run_cutlass_realtime_compare.sh` implements repeat=1 smoke entry
+   points for:
+   - `standalone_hp`;
+   - `uxsched_native_hp_lp`;
+   - `uxsched_hb_fixed_hp_lp`.
+4. `tools/summarize_cutlass_realtime_compare.py` generates `summary.csv` and
+   `comparison.csv` without pandas and uses the same sorted linear-interpolation
+   percentile definition as `benchmarks/realtime_inference_latency.py`.
+5. The HB_FIXED realtime path requires an exact kernel allowlist file. The
+   template is `benchmarks/cutlass/verified_kernel_sm120_fp32_simt.txt`; formal
+   measurement must fill it from compatibility-probe
+   `discovered_cutlass_kernel_name` and must not use
+   `UXSCHED_HB_VERIFIED_KERNELS=*`.
+6. Repeat=1 smoke is only an integration check. Formal P99 claims still require
+   repeat=3 or repeat=5, correctness pass, identical workload settings, no
+   fallback, no `NO_XQUEUE`, HP passthrough, and real LP parent/child split
+   deltas during measurement.
+
+## Current Implementation Status
+
+- CUTLASS compatibility/correctness gate: PASS in user GPU testing.
+- Runtime metadata bridge to HB backend: PASS in user GPU testing.
+- CUTLASS HP/LP realtime benchmark: IMPLEMENTED and COMPILE VERIFIED in Codex.
+- repeat=1 GPU smoke: waiting for user manual WSL GPU execution.
+- repeat=3/5 final P99 benchmark: not started.

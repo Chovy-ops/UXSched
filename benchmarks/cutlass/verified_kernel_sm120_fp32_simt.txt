@@ -1,0 +1,12 @@
+# CUTLASS verified kernel allowlist for UXSched HB_FIXED realtime benchmark.
+#
+# CUTLASS revision: ad7b2f5
+# CUDA Toolkit: 12.8
+# Architecture: SM120
+# Workload: FP32 SIMT GEMM, RowMajor A/B/C/D, M=N=K=2048 default.
+# CUTLASS target: benchmarks/cutlass/cutlass_realtime_worker.cu
+#
+# Formal HB_FIXED measurement must use the exact mangled CUTLASS kernel name
+# discovered by tools/run_cutlass_launch_probe.sh, not UXSCHED_HB_VERIFIED_KERNELS=*.
+# Add exactly one non-comment kernel name below before running
+# tools/run_cutlass_realtime_compare.sh with uxsched_hb_fixed_hp_lp.

@@ -470,3 +470,26 @@ because transformed code is loaded into a hidden module.
   adding a second scheduler;
 - CUTLASS support requires separate PTX transformability and correctness
   validation.
+
+## CUTLASS Realtime Benchmark Status
+
+2026-06-25:
+
+- CUTLASS compatibility/correctness gate: RUNTIME VERIFIED and CORRECTNESS
+  VERIFIED by user GPU testing.
+- Runtime API interception, fatbin/PTX extraction, CUfunction resolution,
+  Runtime synchronization bridge, and Runtime metadata registration into the HB
+  backend: RUNTIME VERIFIED by user GPU testing.
+- CUTLASS HP/LP realtime benchmark implementation: IMPLEMENTED and COMPILE
+  VERIFIED.
+- Added `benchmarks/cutlass/cutlass_realtime_worker.cu` for deterministic FP32
+  SIMT GEMM HP/LP roles.
+- Added `tools/run_cutlass_realtime_compare.sh` for repeat=1 smoke runs of
+  `standalone_hp`, `uxsched_native_hp_lp`, and `uxsched_hb_fixed_hp_lp`.
+- Added `tools/summarize_cutlass_realtime_compare.py` for P50/P95/P99,
+  LP throughput, and HB counter-delta summaries.
+- HB_FIXED realtime measurement requires an exact verified CUTLASS kernel name
+  in `benchmarks/cutlass/verified_kernel_sm120_fp32_simt.txt`; wildcard
+  verification is not allowed for formal measurement.
+- repeat=1 GPU smoke: NOT TESTED in Codex, waiting for user WSL GPU run.
+- repeat=3/5 final P99 experiment: NOT TESTED and not started.
