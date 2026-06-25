@@ -778,3 +778,40 @@ Before ending a session:
 5. Update `hb_integration_status.md`.
 6. Commit relevant source and documentation changes separately.
 7. Print the next manual command for the user.
+
+2026-06-25 CUTLASS standalone HP stability diagnostics:
+
+* Added `tools/analyze_cutlass_standalone_stability.py`.
+  * Reads existing `standalone_hp/repeat_*/hp/output.jsonl` files.
+  * Computes repeat-level mean/P50/P95/P99/max, release-lateness percentiles,
+    and GPU event percentiles with the same sorted linear interpolation method
+    used by the realtime summarizer.
+  * Lists the slowest requests per repeat without dropping, smoothing, or
+    modifying any outlier.
+  * Classifies slow requests as `HOST_RELEASE_JITTER`,
+    `HOST_COMPLETION_JITTER`, `GPU_EXECUTION_JITTER`, or
+    `INSUFFICIENT_STEADY_STATE_WARMUP` using host latency, release lateness,
+    request index, and CUDA event time.
+* Generated analysis for
+  `results/cutlass_realtime_compare_split52_repeat5_20260625_141255`:
+  * `standalone_stability_analysis.md`
+  * `standalone_stability_summary.csv`
+  * `standalone_outliers.csv`
+* Current diagnosis of the existing repeat=5 result:
+  * abnormal Standalone P99 repeat is repeat `0`;
+  * slowest request is repeat `0`, request `196`;
+  * latency is `4907.229 us`, CUDA event time is `4621.792 us`, and release
+    lateness is `102 us`;
+  * initial classification is `GPU_EXECUTION_JITTER`, not HP release drift.
+* Updated `tools/run_cutlass_realtime_compare.sh` with optional stability
+  controls:
+  * `--cpu-affinity <list>` records requested/effective affinity and applies it
+    to the runner, workers, and telemetry helper when requested;
+  * `--pre-run-idle-sec <seconds>` adds explicit idle time before each case;
+  * `--enable-gpu-telemetry` and `--telemetry-interval-sec <seconds>` record
+    `nvidia-smi` P-state, clocks, temperature, power, and utilization to
+    per-case `gpu_telemetry.csv` files when supported by the driver;
+  * metadata now includes an environment snapshot with WSL/Linux, CUDA, GPU,
+    CPU, load, and governor information where available.
+* Codex did not run any real GPU benchmark and did not modify the original
+  result data.

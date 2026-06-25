@@ -512,3 +512,28 @@ because transformed code is loaded into a hidden module.
     claim of global optimality.
 - Final report and figures: generated in the result directory by
   `tools/plot_cutlass_realtime_results.py`; not committed to Git.
+
+## CUTLASS Standalone Stability Diagnostics
+
+2026-06-25:
+
+- The current repeat=5 CUTLASS HP/LP result remains the formal result for
+  UXSched Native versus UXSched + HB_FIXED under identical contention.
+- Standalone HP is only a context view in that result. Its P99 varies strongly
+  across repeats while mean and P95 remain stable.
+- Added `tools/analyze_cutlass_standalone_stability.py` to analyze existing
+  Standalone JSONL files without removing or smoothing outliers.
+- Analysis of
+  `results/cutlass_realtime_compare_split52_repeat5_20260625_141255` found:
+  - abnormal Standalone repeat: `0`;
+  - slowest request: repeat `0`, request `196`;
+  - latency: `4907.229 us`;
+  - CUDA event time: `4621.792 us`;
+  - release lateness: `102 us`;
+  - initial classification: `GPU_EXECUTION_JITTER`.
+- Added optional runner controls for future manual stability testing:
+  `--cpu-affinity`, `--pre-run-idle-sec`, `--enable-gpu-telemetry`, and
+  `--telemetry-interval-sec`.
+- The next recommended check is a Standalone-only 1000-request repeat=5 manual
+  run with longer warmup, cooldown, pre-run idle, and GPU telemetry. That run
+  must remain separate from the existing 200-request three-system result.
