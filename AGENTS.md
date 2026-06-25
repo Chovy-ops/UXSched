@@ -66,6 +66,35 @@ Gate 1 must pass before implementing the complete runtime:
 - Event, stream, context/device synchronization semantics are correct.
 - Global Lv1 HPF smoke test passes without local fallback.
 
+### CUTLASS Realtime Benchmark Goal
+
+Reference `benchmarks/realtime_inference_latency.py` and replace the original
+PyTorch/TorchVision workload with an open-source CUTLASS workload.
+
+Under the same GPU, same CUTLASS kernel, same input sizes, same request model,
+same scheduling policy, and same measurement boundaries, compare:
+
+1. UXSched Global HPF + CUTLASS + `NATIVE`
+2. UXSched Global HPF + CUTLASS + Hummingbird `HB_FIXED`
+
+The final performance goal is to show, under fair, correct, and repeatable
+conditions, that UXSched + Hummingbird + CUTLASS improves HP P99 latency over
+the original UXSched baseline.
+
+Before making any P99 improvement claim, prove all of the following:
+
+- CUTLASS output is correct.
+- Native and `HB_FIXED` execute the same amount of work.
+- HB transform, parent launch, and child launch statistics are real and greater
+  than zero.
+- There is no Native fallback.
+- There is no `NO_XQUEUE`.
+- Split group and CUDA Runtime synchronization semantics are correct.
+- Parent completion occurs only after all children complete.
+- The benchmark uses at least `repeat=3`.
+- No advantage is obtained by changing workload, reducing computation, skipping
+  kernels, or changing measurement boundaries.
+
 ### Git Rules
 
 - Work on `feature/hummingbird-split-backend`.
@@ -75,4 +104,3 @@ Gate 1 must pass before implementing the complete runtime:
   explicitly requested.
 - Update `hb_integration_status.md` and `docs/codex_handoff.md` before ending a
   work session.
-

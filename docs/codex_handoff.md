@@ -656,6 +656,19 @@ GEMM workload. Do not download CUTLASS automatically; use a user-provided
 
 ## Session completion checklist
 
+2026-06-25 project rule update:
+
+* Updated `AGENTS.md` with the final CUTLASS realtime benchmark objective and
+  mandatory proof requirements before any HP P99 improvement claim.
+* The rule requires fair comparison between UXSched Global HPF + CUTLASS +
+  `NATIVE` and UXSched Global HPF + CUTLASS + Hummingbird `HB_FIXED` under the
+  same GPU, kernel, input scale, request model, scheduler, and measurement
+  boundary.
+* P99 claims require CUTLASS correctness, equal work, real HB transform/parent/
+  child counts, no Native fallback, no `NO_XQUEUE`, correct split-group and
+  Runtime synchronization semantics, parent completion after all children, and
+  at least `repeat=3`.
+
 Before ending a session:
 
 1. Run `git status`.

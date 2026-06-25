@@ -37,7 +37,7 @@ Allowed status values in this file:
 | CUTLASS launch compatibility probe | COMPILE VERIFIED | `benchmarks/cutlass/cutlass_launch_probe.cu` builds with external CUTLASS revision `ad7b2f5`, CUDA 12.8, native SM120 SASS, and PTX. User manual GPU result verified Native and UXSched NATIVE correctness, but HB_FIXED backend was not exercised before the Runtime bridge. Runtime GPU compatibility must be rerun outside Codex. |
 | CUTLASS CUDA Runtime bridge | COMPILE VERIFIED | Existing `libshimcuda.so` intercepts CUDA Runtime fatbin/function registration, `cudaLaunchKernel`, and Runtime stream/event/device synchronization APIs used by the CUTLASS probe. User GPU result confirmed Runtime API interception, PTX extraction, CUfunction resolution, and Runtime sync interception. The metadata bridge now explicitly registers Runtime `CUmodule -> PTX` and `CUfunction -> kernel name` into the existing HB backend registry; GPU rerun is required to verify that `function=<unknown>/PTX_UNAVAILABLE` is gone. |
 | CUTLASS workload | NOT TESTED | Full HP/LP realtime workload is not implemented yet. CUTLASS correctness is mandatory before any P99 claim. |
-| Persistent agent rules | IMPLEMENTED | Added `AGENTS.md` with UXSched-Hummingbird integration rules. |
+| Persistent agent rules | IMPLEMENTED | Added `AGENTS.md` with UXSched-Hummingbird integration rules and CUTLASS realtime benchmark fairness/P99 proof requirements. |
 | Gate 1 smoke runner | IMPLEMENTED | `tools/run_hb_gate1_smoke.sh` now records correctness, sync, HP passthrough, fallback artifacts, and writes `gate1_summary.env`; GPU rerun is required. |
 
 ## Completed
