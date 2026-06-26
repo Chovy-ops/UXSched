@@ -16,8 +16,13 @@ SYSTEMS = ["standalone_hp", "uxsched_native_hp_lp", "uxsched_hb_fixed_hp_lp"]
 REPEATS = [str(i) for i in range(5)]
 LABELS = {
     "standalone_hp": "Standalone HP",
-    "uxsched_native_hp_lp": "UXSched Native",
-    "uxsched_hb_fixed_hp_lp": "UXSched + HB_FIXED",
+    "uxsched_native_hp_lp": "UXSched Lv1 + Unsplit Kernel",
+    "uxsched_hb_fixed_hp_lp": "UXSched Lv1 + HB_FIXED",
+}
+AXIS_LABELS = {
+    "standalone_hp": "Standalone HP",
+    "uxsched_native_hp_lp": "UXSched Lv1\n+ Unsplit Kernel",
+    "uxsched_hb_fixed_hp_lp": "UXSched Lv1\n+ HB_FIXED",
 }
 COLORS = {
     "standalone_hp": "#7f7f7f",
@@ -317,13 +322,13 @@ def make_plots(fig_dir, summary, comparison, derived, formats, dpi, title_suffix
     fig, ax = plt.subplots(figsize=(6.4, 4.4))
     values = [agg_mean(s, "hp_p99_us") for s in CORE_SYSTEMS]
     errors = [agg_std(s, "hp_p99_us") for s in CORE_SYSTEMS]
-    bars = ax.bar([LABELS[s] for s in CORE_SYSTEMS], values, yerr=errors,
+    bars = ax.bar([AXIS_LABELS[s] for s in CORE_SYSTEMS], values, yerr=errors,
                   color=[COLORS[s] for s in CORE_SYSTEMS], capsize=6)
     setup_ax(ax, "HP P99 Latency under LP Contention" + suffix, "Latency (us)")
     ax.set_ylim(bottom=0, top=max(v + e for v, e in zip(values, errors)) * 1.22)
     add_bar_labels(ax, bars)
     ax.text(0.5, 0.93,
-            f"Paired P99 reduction: {p99_reduction:.2f}%   Native / HB = {1.0 / p99_ratio:.2f}x\n"
+            f"Paired P99 reduction: {p99_reduction:.2f}%   Unsplit / HB = {1.0 / p99_ratio:.2f}x\n"
             "CUTLASS FP32 SIMT GEMM, M=N=K=2048, 5 repeats; error bars: stddev",
             transform=ax.transAxes, ha="center", va="top", fontsize=9)
     generated += save_figure(fig, fig_dir / "hp_p99_native_vs_hb", formats, dpi)
@@ -332,7 +337,7 @@ def make_plots(fig_dir, summary, comparison, derived, formats, dpi, title_suffix
     fig, ax = plt.subplots(figsize=(6.4, 4.4))
     values = [agg_mean(s, "lp_throughput_rps") for s in CORE_SYSTEMS]
     errors = [agg_std(s, "lp_throughput_rps") for s in CORE_SYSTEMS]
-    bars = ax.bar([LABELS[s] for s in CORE_SYSTEMS], values, yerr=errors,
+    bars = ax.bar([AXIS_LABELS[s] for s in CORE_SYSTEMS], values, yerr=errors,
                   color=[COLORS[s] for s in CORE_SYSTEMS], capsize=6)
     setup_ax(ax, "LP Throughput under HP Contention" + suffix, "Throughput (requests/s)")
     ax.set_ylim(bottom=0, top=max(v + e for v, e in zip(values, errors)) * 1.22)
@@ -374,7 +379,7 @@ def make_plots(fig_dir, summary, comparison, derived, formats, dpi, title_suffix
     ax.set_xticks(repeats)
     ax.set_ylim(bottom=0)
     ax.legend(frameon=False)
-    ax.text(0.5, -0.20, "Each point is one measured repeat; HB_FIXED is below Native in all five paired repeats.",
+    ax.text(0.5, -0.20, "Each point is one measured repeat; HB_FIXED is below the Unsplit Kernel baseline in all five paired repeats.",
             transform=ax.transAxes, ha="center", va="top", fontsize=9)
     generated += save_figure(fig, fig_dir / "hp_p99_by_repeat", formats, dpi)
     plt.close(fig)
@@ -396,13 +401,13 @@ def make_plots(fig_dir, summary, comparison, derived, formats, dpi, title_suffix
     fig, ax = plt.subplots(figsize=(7.2, 4.4))
     values = [agg_mean(s, "hp_p99_us") for s in SYSTEMS]
     errors = [agg_std(s, "hp_p99_us") for s in SYSTEMS]
-    bars = ax.bar([LABELS[s] for s in SYSTEMS], values, yerr=errors,
+    bars = ax.bar([AXIS_LABELS[s] for s in SYSTEMS], values, yerr=errors,
                   color=[COLORS[s] for s in SYSTEMS], capsize=6)
     setup_ax(ax, "Context View: HP P99 Latency" + suffix, "Latency (us)")
     ax.set_ylim(bottom=0, top=max(v + e for v, e in zip(values, errors)) * 1.2)
     add_bar_labels(ax, bars)
     ax.text(0.5, -0.22,
-            "Standalone HP is context only and has high cross-repeat variance; main comparison is Native vs HB_FIXED.",
+            "Standalone HP is context only and has high cross-repeat variance; main comparison is UXSched Lv1 + Unsplit Kernel vs UXSched Lv1 + HB_FIXED.",
             transform=ax.transAxes, ha="center", va="top", fontsize=9)
     generated += save_figure(fig, fig_dir / "hp_p99_all_systems_context", formats, dpi)
     plt.close(fig)
@@ -510,12 +515,12 @@ def make_report(result_dir, fig_dir, metadata, system_rows, derived, hb_stats):
         "",
         "## 3. Core Performance Results",
         "",
-        f"In five paired repeats, UXSched + HB_FIXED reduced HP P99 latency by {d['hp_p99_latency']['reduction_or_retention_pct']:.2f}% versus UXSched Native while retaining {d['lp_throughput']['reduction_or_retention_pct']:.2f}% of LP throughput.",
+        f"In five paired repeats, UXSched Lv1 + Hummingbird Fixed Splitting (HB_FIXED) reduced HP P99 latency by {d['hp_p99_latency']['reduction_or_retention_pct']:.2f}% versus UXSched Lv1 + Unsplit Kernel while retaining {d['lp_throughput']['reduction_or_retention_pct']:.2f}% of LP throughput.",
         "",
         f"- Native HP P99 mean: {native['hp_p99_us_mean']:.3f} us",
         f"- HB_FIXED HP P99 mean: {hb['hp_p99_us_mean']:.3f} us",
         f"- P99 ratio: {d['hp_p99_latency']['paired_ratio_mean']:.6f}",
-        f"- Native / HB P99 factor: {1.0 / d['hp_p99_latency']['paired_ratio_mean']:.2f}x",
+        f"- Unsplit / HB P99 factor: {1.0 / d['hp_p99_latency']['paired_ratio_mean']:.2f}x",
         f"- HP P95 reduction: {d['hp_p95_latency']['reduction_or_retention_pct']:.2f}%",
         f"- HP mean reduction: {d['hp_mean_latency']['reduction_or_retention_pct']:.2f}%",
         f"- Native LP throughput mean: {native['lp_throughput_rps_mean']:.3f} requests/s",
@@ -529,7 +534,7 @@ def make_report(result_dir, fig_dir, metadata, system_rows, derived, hb_stats):
         "",
         "## 5. Standalone Context",
         "",
-        f"Standalone HP is included only as context. Its HP P99 mean is {metrics['standalone_hp']['hp_p99_us_mean']:.3f} us with stddev {metrics['standalone_hp']['hp_p99_us_stddev']:.3f} us and max repeat P99 4703.009 us, so this run does not support a claim that HB_FIXED is better than exclusive standalone execution. The main comparison is Native versus HB_FIXED under the same HP+LP contention.",
+        f"Standalone HP is included only as context. Its HP P99 mean is {metrics['standalone_hp']['hp_p99_us_mean']:.3f} us with stddev {metrics['standalone_hp']['hp_p99_us_stddev']:.3f} us and max repeat P99 4703.009 us, so this run does not support a claim that HB_FIXED is better than exclusive standalone execution. The main comparison is UXSched Lv1 + Unsplit Kernel versus UXSched Lv1 + HB_FIXED under the same HP+LP contention.",
         "",
         "## 6. split=52 Rationale",
         "",
