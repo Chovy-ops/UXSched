@@ -815,3 +815,169 @@ Before ending a session:
     CPU, load, and governor information where available.
 * Codex did not run any real GPU benchmark and did not modify the original
   result data.
+
+2026-06-27 conservative bubble-aware MVP:
+
+* Added a default-off explicit-hint bubble-aware controller for the HB_FIXED
+  split backend.
+  * Environment switch: `UXSCHED_BUBBLE_AWARE=ON|OFF`, default `OFF`.
+  * Optional controls: `UXSCHED_BUBBLE_MAX_IN_FLIGHT=1`,
+    `UXSCHED_BUBBLE_FAIL_SAFE=ON`, and `UXSCHED_BUBBLE_LOG=ON`.
+  * Values other than `UXSCHED_BUBBLE_MAX_IN_FLIGHT=1` are clamped to `1`.
+* Added explicit hint entry points:
+  * `UXSchedBubbleOpenHint()`
+  * `UXSchedBubbleCloseHint()`
+  * `UXSchedBubbleHpEnqueueHint()`
+  * `UXSchedBubbleHpQueueEmptyHint()`
+* HB_FIXED child submission now has a bubble-aware path when explicitly
+  enabled:
+  * no behavior change when disabled;
+  * one LP child can be submitted only while the bubble state is `OPEN`, HP is
+    not pending, and no LP child is in flight;
+  * HP enqueue stops new LP child submissions but does not interrupt a child
+    already executing;
+  * pending split groups resume only after a fresh explicit bubble-open hint.
+* Added machine-readable `[UXSCHED-BUBBLE]` event logs and an exit-time
+  `bubble_stats` line.
+* Added CPU-only validation:
+  * `tools/bubble_aware_mvp_selftest.cpp`
+  * `tools/run_bubble_aware_mvp_selftest.sh`
+  * `tools/check_bubble_aware_mvp_log.py`
+* Added `docs/bubble_aware_mvp.md`.
+* Static validation passed:
+  * `tools/run_bubble_aware_mvp_selftest.sh`
+  * `python3 -m py_compile tools/check_bubble_aware_mvp_log.py`
+  * `python3 tools/check_bubble_aware_mvp_log.py --self-test`
+  * `cmake --build build-hb-cu128 --target halcuda shimcuda -j2`
+* Codex did not run any real GPU benchmark. This is an explicit-hint MVP, not
+  Hummingbird's full automatic bubble detector, kernel-tick, or dynamic
+  consolidation runtime.
+
+2026-06-27 bubble-aware real CUDA smoke preparation:
+
+* Added same-process real CUDA smoke support to the CUTLASS launch probe:
+  `--bubble-smoke none|explicit-open|hp-active|no-hint|fail-safe`.
+  * The probe resolves `UXSchedBubble*Hint` symbols with
+    `dlsym(RTLD_DEFAULT, ...)`, so hints and HB_FIXED backend state are in the
+    same process when `libshimcuda.so` is preloaded.
+  * The `hp-active` smoke launches and synchronizes a tiny real CUDA HP marker
+    kernel on a separate stream with `UXSCHED_HB_PRIORITY=10`; it is used only
+    to exercise HP passthrough/HP_ACTIVE ordering, not as a performance
+    workload.
+* Added `tools/run_bubble_aware_gpu_smoke.sh`.
+  * Runs five single-launch functional cases in a new result directory:
+    `case_off`, `case_explicit_open`, `case_hp_active`, `case_no_hint`, and
+    `case_fail_safe`.
+  * Uses `UXSCHED_HB_SPLIT_BLOCKS=52`, strict CUTLASS verified-kernel allowlist,
+    Global HPF xserver, and the single UXSched CUDA shim.
+  * Uses `timeout` per case to prevent no-hint or HP_ACTIVE sequencing errors
+    from hanging indefinitely.
+  * Bubble gate rejection is no longer treated as Native fallback. The HB split
+    backend returns `LaunchDisposition::kDeferredByBubbleGate` with
+    `CUDA_ERROR_NOT_READY`, and the Runtime shim maps that to `cudaErrorNotReady`
+    without launching the original LP kernel.
+* Added `tools/check_bubble_aware_gpu_smoke.py`.
+  * Extracts `[UXSCHED-BUBBLE]`, `[UXSCHED-HB]`, and xserver evidence.
+  * Generates per-case `bubble_events.jsonl`, `bubble_stats.env`,
+    `backend_stats.env`, top-level `summary.csv`, `smoke_report.md`, and
+    `status.env`.
+  * Gates OFF-mode regression, explicit-open real child submission,
+    HP_ACTIVE no-new-LP ordering, no-hint rejection, and fail-safe rejection.
+* Static validation passed:
+  * `bash -n tools/run_bubble_aware_gpu_smoke.sh`
+  * `python3 -m py_compile tools/check_bubble_aware_gpu_smoke.py`
+  * `python3 tools/check_bubble_aware_gpu_smoke.py --self-test`
+  * `cmake --build build-hb-cu128 --target halcuda shimcuda -j2`
+  * `tools/build_cutlass_launch_probe.sh --build-dir build-cutlass-cu128 ...`
+  * `nm -D --defined-only build-hb-cu128/platforms/cuda/libhalcuda.so | grep UXSchedBubble`
+* Codex did not run the real GPU smoke. Manual WSL GPU execution is still
+  required before marking the bubble-aware MVP RUNTIME VERIFIED.
+
+2026-06-27 bubble-aware smoke semantic fix:
+
+* Fixed bubble-gate rejection so it no longer falls back to Native LP launch.
+  * Added `LaunchDisposition::kPassthrough`.
+  * `HIGH_PRIORITY_PASSTHROUGH` now returns passthrough and Runtime logs
+    `runtime_launch_passthrough task_role=HP is_fallback=0`.
+  * Bubble-gate rejection returns `kDeferredByBubbleGate` with
+    `CUDA_ERROR_NOT_READY`; Runtime logs `runtime_backend_deferred` and returns
+    `cudaErrorNotReady` without calling Native Runtime launch.
+  * Real LP fallback remains `task_role=LP backend=NATIVE is_fallback=1`.
+* Added same-process observation APIs:
+  * `UXSchedBubbleGetLpChildLaunchCount()`
+  * `UXSchedBubbleGetLpInFlight()`
+  * `UXSchedBubbleWaitForLpChildLaunch(target_count, timeout_ms)`
+* Updated `case_hp_active` so HP enqueue waits for the first real
+  `lp_child_launch_in_bubble` instead of relying on fixed sleep timing.
+* Updated `tools/check_bubble_aware_gpu_smoke.py` gates:
+  * HP passthrough is not counted as fallback or Native LP launch.
+  * `case_hp_active` requires the first LP child launch to occur before
+    `hp_enqueue`.
+  * HP window permits HP marker passthrough but forbids new LP child launch and
+    Native LP fallback.
+  * `case_no_hint` and `case_fail_safe` are expected-deferred negative tests.
+* Static validation passed:
+  * `bash -n tools/run_bubble_aware_gpu_smoke.sh`
+  * `python3 -m py_compile tools/check_bubble_aware_gpu_smoke.py`
+  * `python3 tools/check_bubble_aware_gpu_smoke.py --self-test`
+  * `tools/run_bubble_aware_mvp_selftest.sh`
+  * `cmake --build build-hb-cu128 --target halcuda shimcuda -j2`
+  * `tools/build_cutlass_launch_probe.sh --build-dir build-cutlass-cu128`
+  * `git diff --check`
+* Codex did not run the real GPU smoke.
+
+2026-06-27 bubble-aware smoke status/log fix:
+
+* Based on the user-provided GPU smoke result
+  `results/bubble_aware_gpu_smoke_20260627_194250`, `case_hp_active` already
+  functionally passes. The scheduling behavior was left unchanged.
+* Fixed LP child event metadata:
+  * `SplitCommandGroup` now stores the original parent `task_priority`.
+  * `bubble_fill_attempt`, `bubble_fill_rejected`, `lp_child_launch_in_bubble`,
+    and `lp_child_complete` use the stored LP priority instead of reading the
+    callback thread's current environment.
+  * This prevents LP child completion from being logged as
+    `task_priority=10` after the HP marker thread sets `UXSCHED_HB_PRIORITY=10`.
+* Updated smoke summary semantics:
+  * `case_no_hint` and `case_fail_safe` are expected-deferred safety tests.
+  * Passing negative cases are summarized as `status=EXPECTED_DEFERRED`,
+    `expected_deferred_pass=1`, and
+    `correctness_status=NOT_APPLICABLE`.
+* Fixed HP passthrough counting:
+  * `hp_passthrough_launch_count` now counts only the unique
+    `runtime_launch_passthrough` event.
+  * The backend `HIGH_PRIORITY_PASSTHROUGH` line remains supporting evidence
+    and is not counted as a second launch.
+* Updated `tools/check_bubble_aware_gpu_smoke.py --self-test` to cover:
+  * expected-deferred cases passing without correctness;
+  * Native LP fallback causing expected-deferred failure;
+  * de-duplicated HP passthrough counting;
+  * LP child event priority/role consistency.
+* Static validation passed:
+  * `python3 -m py_compile tools/check_bubble_aware_gpu_smoke.py`
+  * `python3 tools/check_bubble_aware_gpu_smoke.py --self-test`
+* Codex did not run the real GPU smoke.
+
+2026-06-27 bubble-aware MVP documented as runtime-verified:
+
+* User-provided latest GPU smoke result
+  `results/bubble_aware_gpu_smoke_20260627_195834` reports:
+  * `BUBBLE_AWARE_GPU_SMOKE=PASS`
+  * `case_count=5`
+  * `error_count=0`
+* The smoke covers:
+  * `case_off`: default OFF regression for existing HB_FIXED behavior;
+  * `case_explicit_open`: explicit bubble-open drives real HB_FIXED child
+    launches and completions;
+  * `case_hp_active`: first LP child launches before HP enqueue, HP_ACTIVE
+    prevents new LP child launches and Native LP fallback, and a fresh
+    bubble-open resumes the pending split group;
+  * `case_no_hint` and `case_fail_safe`: expected-deferred negative tests with
+    no child launch, no Native LP fallback, and no correctness claim.
+* This marks the explicit-hint conservative bubble-aware MVP as RUNTIME
+  VERIFIED for functional smoke only. It is not a performance result and does
+  not implement automatic bubble detection, kernel-tick, multi-child
+  pre-submission, or dynamic consolidation.
+* Updated competition documentation under `参赛文档输出/` with the smoke
+  evidence, state machine diagram, HP_ACTIVE timeline diagram, evidence map,
+  and data verification notes.

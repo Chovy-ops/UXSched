@@ -1,0 +1,6 @@
+case,status,correctness_pass,correctness_status,expected_deferred_pass,bubble_aware_enabled,bubble_hint_mode,bubble_open_count,bubble_close_count,bubble_fill_attempt_count,bubble_fill_success_count,bubble_fill_rejected_count,bubble_reject_hp_pending_count,bubble_reject_no_hint_count,lp_child_launched_in_bubble_count,lp_child_complete_count,stop_new_lp_on_hp_count,max_lp_in_flight,final_lp_in_flight,bubble_fail_safe_count,hp_hb_transform_count,hb_parent_launch_count,hb_child_launch_count,hb_fallback_count,hb_no_xqueue_count,native_lp_launch_count,native_lp_launch_during_hp_window,hp_passthrough_launch_count,global_scheduler_log_pass,local_fallback_count,event_order_pass,first_lp_child_before_hp_enqueue,lp_child_event_role_pass
+case_off,COMPLETE,1,PASS,0,0,none,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,6,0,0,0,0,0,1,0,1,0,1
+case_explicit_open,COMPLETE,1,PASS,0,1,explicit,1,1,6,6,0,0,0,6,6,0,1,0,0,0,1,6,0,0,0,0,0,1,0,1,0,1
+case_hp_active,COMPLETE,1,PASS,0,1,explicit,3,1,8,6,2,2,0,6,6,1,1,0,0,0,1,6,0,0,0,0,1,1,0,1,1,1
+case_no_hint,EXPECTED_DEFERRED,0,NOT_APPLICABLE,1,1,explicit,0,0,1,0,1,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,1,0,1
+case_fail_safe,EXPECTED_DEFERRED,0,NOT_APPLICABLE,1,1,explicit,0,2,1,0,1,0,1,0,0,0,0,0,2,0,0,0,0,0,0,0,0,1,0,1,0,1
