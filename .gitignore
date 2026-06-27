@@ -63,3 +63,6 @@ Makefile
 /build/
 /build-*/
 /cmake-build-/
+
+/benchmark_results/
+/参赛文档输出/
