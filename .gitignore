@@ -66,3 +66,6 @@ Makefile
 
 /benchmark_results/
 /参赛文档输出/
+
+# Local competition documents
+/参赛文档输出/
