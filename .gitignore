@@ -28,3 +28,38 @@ venv/
 *.cdf
 *.exe
 *.dll
+
+# Local AI tool settings
+.claude/settings.local.json
+
+# Build directories
+build/
+build-*/
+cmake-build-*/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Compiled files
+*.o
+*.so
+*.a
+*.out
+
+# 不上传实验结果
+/results/
+
+# 不上传参考资料和参赛文档
+/参考文档/
+/参赛文档输出/
+
+# 不上传本地配置
+/.claude/settings.local.json
+
+# 不上传编译产物
+/build/
+/build-*/
+/cmake-build-/
