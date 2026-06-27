@@ -7,6 +7,11 @@ from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
+SPLIT_SIZE_DEFINITION = (
+    "Split size denotes the maximum number of CUDA thread blocks per "
+    "Hummingbird child-kernel launch."
+)
+
 
 def read_csv(path):
     with path.open(newline="", encoding="utf-8") as f:
@@ -48,6 +53,12 @@ def style_ax(ax):
     ax.set_axisbelow(True)
 
 
+def add_bottom_note(fig, lines):
+    text = "\n".join(lines)
+    fig.text(0.5, 0.025, text, ha="center", va="bottom", fontsize=8)
+    fig.subplots_adjust(bottom=0.27)
+
+
 def labels_for(summary):
     rows = sorted(summary, key=lambda r: split_sort_key(r["split_blocks"]))
     labels = [r["split_blocks"] for r in rows]
@@ -71,7 +82,11 @@ def bar_plot(summary, metric_mean, metric_std, ylabel, title, out_base, formats,
     ax.set_title(title)
     ax.set_ylim(bottom=0)
     style_ax(ax)
-    fig.text(0.5, 0.01, "Error bars show cross-repeat standard deviation. Split=52 is highlighted as the formula-derived candidate.", ha="center", fontsize=8)
+    add_bottom_note(fig, [
+        "Error bars show cross-repeat standard deviation.",
+        SPLIT_SIZE_DEFINITION,
+        "Split=52 is the resource-derived candidate.",
+    ])
     save_all(fig, out_base, formats, dpi)
     plt.close(fig)
 
@@ -99,7 +114,10 @@ def plot_tradeoff(tradeoff, out_base, formats, dpi):
     ax.set_xlim(left=0)
     ax.set_ylim(bottom=0)
     style_ax(ax)
-    fig.text(0.5, 0.01, "The trade-off uses paired repeat ratios. 52 is not claimed as a global optimum.", ha="center", fontsize=8)
+    add_bottom_note(fig, [
+        SPLIT_SIZE_DEFINITION,
+        "The trade-off uses paired-repeat ratios; split=52 is not claimed as a global optimum.",
+    ])
     save_all(fig, out_base, formats, dpi)
     plt.close(fig)
 
@@ -122,6 +140,10 @@ def plot_normalized(normalized, out_base, formats, dpi):
     ax.set_title("Normalized Split-size Metrics")
     ax.legend()
     style_ax(ax)
+    add_bottom_note(fig, [
+        SPLIT_SIZE_DEFINITION,
+        "Ratios are relative to the paired Unsplit baseline for the same repeat.",
+    ])
     save_all(fig, out_base, formats, dpi)
     plt.close(fig)
 
@@ -133,8 +155,9 @@ def plot_repeat(repeat_rows, out_base, formats, dpi):
     for row in repeat_rows:
         split = str(row["split_blocks"])
         rep = int(row["repeat"])
-        by_split.setdefault(split, []).append((rep, fnum(row["hb_hp_p99_us"])))
-        native.setdefault(rep, []).append(fnum(row["native_hp_p99_us"]))
+        display_repeat = rep + 1
+        by_split.setdefault(split, []).append((display_repeat, fnum(row["hb_hp_p99_us"])))
+        native.setdefault(display_repeat, []).append(fnum(row["native_hp_p99_us"]))
     repeats = sorted(native)
     native_vals = [sum(native[r]) / len(native[r]) for r in repeats]
     fig, ax = plt.subplots(figsize=(7.2, 4.8))
@@ -149,8 +172,15 @@ def plot_repeat(repeat_rows, out_base, formats, dpi):
     ax.set_ylabel("HP P99 latency (us)")
     ax.set_title("HP P99 by Repeat and Split Size")
     ax.set_ylim(bottom=0)
+    if repeats:
+        ax.set_xticks(repeats)
+        ax.set_xlim(min(repeats) - 0.15, max(repeats) + 0.15)
     ax.legend()
     style_ax(ax)
+    add_bottom_note(fig, [
+        SPLIT_SIZE_DEFINITION,
+        "Displayed repeat numbers are internal repeat IDs plus one; underlying CSV repeat IDs are unchanged.",
+    ])
     save_all(fig, out_base, formats, dpi)
     plt.close(fig)
 
