@@ -1,6 +1,9 @@
 #include <cuda_runtime.h>
 
+#include <dlfcn.h>
+
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -9,6 +12,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <thread>
 #include <typeinfo>
 #include <vector>
 
@@ -39,6 +43,7 @@ struct Options {
     std::string stream = "explicit";
     bool correctness = true;
     std::string output;
+    std::string bubble_smoke = "none";
     float alpha = 1.0f;
     float beta = 1.0f;
 };
@@ -65,6 +70,9 @@ struct Metrics {
     uint64_t nan_count = 0;
     uint64_t inf_count = 0;
     bool correctness_pass = false;
+    std::string bubble_smoke_case = "none";
+    bool bubble_hint_api_available = false;
+    std::string bubble_hint_error;
     double cpu_request_us = 0.0;
     double gpu_event_us = 0.0;
     float abs_tolerance = 1.0e-2f;
@@ -92,6 +100,13 @@ using ProbeGemm = cutlass::gemm::device::Gemm<
     EpilogueOutputOp,
     cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>,
     2>;
+
+__global__ void BubbleSmokeHpKernel(float *ptr)
+{
+    if (blockIdx.x == 0 && threadIdx.x == 0 && ptr != nullptr) {
+        ptr[0] += 0.0f;
+    }
+}
 
 bool NextArg(int argc, char **argv, int *i, std::string *out)
 {
@@ -135,6 +150,8 @@ bool ParseArgs(int argc, char **argv, Options *opts)
             opts->correctness = false;
         } else if (arg == "--output") {
             if (!NextArg(argc, argv, &i, &opts->output)) return false;
+        } else if (arg == "--bubble-smoke") {
+            if (!NextArg(argc, argv, &i, &opts->bubble_smoke)) return false;
         } else if (arg == "--help" || arg == "-h") {
             return false;
         } else {
@@ -142,10 +159,16 @@ bool ParseArgs(int argc, char **argv, Options *opts)
         }
     }
 
+    const bool smoke_ok = opts->bubble_smoke == "none" ||
+                          opts->bubble_smoke == "explicit-open" ||
+                          opts->bubble_smoke == "hp-active" ||
+                          opts->bubble_smoke == "no-hint" ||
+                          opts->bubble_smoke == "fail-safe";
+
     return (opts->mode == "runtime" || opts->mode == "driver") &&
            (opts->stream == "default" || opts->stream == "explicit") &&
            opts->m > 0 && opts->n > 0 && opts->k > 0 &&
-           opts->iterations > 0 && opts->warmup >= 0;
+           opts->iterations > 0 && opts->warmup >= 0 && smoke_ok;
 }
 
 void PrintUsage(const char *argv0)
@@ -153,7 +176,8 @@ void PrintUsage(const char *argv0)
     std::cerr
         << "usage: " << argv0 << " --mode runtime|driver --m M --n N --k K "
         << "[--iterations N] [--warmup N] [--stream default|explicit] "
-        << "[--correctness|--no-correctness] [--output PATH]\n";
+        << "[--correctness|--no-correctness] [--output PATH] "
+        << "[--bubble-smoke none|explicit-open|hp-active|no-hint|fail-safe]\n";
 }
 
 float ValueA(int row, int)
@@ -243,6 +267,9 @@ void EmitJson(const Options &opts, const Metrics &m, std::ostream &os)
     JsonFloatField(os, "absolute_tolerance", m.abs_tolerance);
     JsonFloatField(os, "relative_tolerance", m.rel_tolerance);
     JsonField(os, "correctness_pass", m.correctness_pass);
+    JsonField(os, "bubble_smoke_case", m.bubble_smoke_case);
+    JsonField(os, "bubble_hint_api_available", m.bubble_hint_api_available);
+    JsonField(os, "bubble_hint_error", m.bubble_hint_error);
     JsonFloatField(os, "cpu_request_us", m.cpu_request_us);
     JsonFloatField(os, "gpu_event_us", m.gpu_event_us);
     JsonField(os, "cuda_available", m.cuda_available);
@@ -254,6 +281,53 @@ void EmitJson(const Options &opts, const Metrics &m, std::ostream &os)
     JsonField(os, "cutlass_status", m.cutlass_status);
     JsonNumberField(os, "return_code", m.return_code, false);
     os << "}\n";
+}
+
+using BubbleHintFn = void (*)();
+using BubbleGetCountFn = uint64_t (*)();
+using BubbleWaitForLaunchFn = int (*)(uint64_t, uint32_t);
+
+struct BubbleHintApi {
+    BubbleHintFn open = nullptr;
+    BubbleHintFn close = nullptr;
+    BubbleHintFn hp_enqueue = nullptr;
+    BubbleHintFn hp_queue_empty = nullptr;
+    BubbleGetCountFn get_lp_child_launch_count = nullptr;
+    BubbleGetCountFn get_lp_in_flight = nullptr;
+    BubbleWaitForLaunchFn wait_for_lp_child_launch = nullptr;
+    std::string error;
+};
+
+BubbleHintFn ResolveHint(const char *name, std::string *error)
+{
+    dlerror();
+    void *sym = dlsym(RTLD_DEFAULT, name);
+    const char *dl_error = dlerror();
+    if (dl_error != nullptr || sym == nullptr) {
+        if (!error->empty()) *error += ";";
+        *error += name;
+        return nullptr;
+    }
+    return reinterpret_cast<BubbleHintFn>(sym);
+}
+
+BubbleHintApi ResolveBubbleHintApi()
+{
+    BubbleHintApi api;
+    api.open = ResolveHint("UXSchedBubbleOpenHint", &api.error);
+    api.close = ResolveHint("UXSchedBubbleCloseHint", &api.error);
+    api.hp_enqueue = ResolveHint("UXSchedBubbleHpEnqueueHint", &api.error);
+    api.hp_queue_empty = ResolveHint("UXSchedBubbleHpQueueEmptyHint", &api.error);
+    api.get_lp_child_launch_count =
+        reinterpret_cast<BubbleGetCountFn>(dlsym(RTLD_DEFAULT, "UXSchedBubbleGetLpChildLaunchCount"));
+    if (api.get_lp_child_launch_count == nullptr) api.error += ";UXSchedBubbleGetLpChildLaunchCount";
+    api.get_lp_in_flight =
+        reinterpret_cast<BubbleGetCountFn>(dlsym(RTLD_DEFAULT, "UXSchedBubbleGetLpInFlight"));
+    if (api.get_lp_in_flight == nullptr) api.error += ";UXSchedBubbleGetLpInFlight";
+    api.wait_for_lp_child_launch =
+        reinterpret_cast<BubbleWaitForLaunchFn>(dlsym(RTLD_DEFAULT, "UXSchedBubbleWaitForLpChildLaunch"));
+    if (api.wait_for_lp_child_launch == nullptr) api.error += ";UXSchedBubbleWaitForLpChildLaunch";
+    return api;
 }
 
 void EmitResult(const Options &opts, const Metrics &metrics)
@@ -284,6 +358,7 @@ int RunRuntimeMode(const Options &opts)
 {
     Metrics metrics;
     metrics.kernel_symbol_hint = typeid(typename ProbeGemm::GemmKernel).name();
+    metrics.bubble_smoke_case = opts.bubble_smoke;
 
     cudaError_t err = cudaGetDeviceCount(&metrics.device_count);
     if (err != cudaSuccess || metrics.device_count <= 0) {
@@ -395,11 +470,79 @@ int RunRuntimeMode(const Options &opts)
     if ((err = cudaEventCreate(&start)) != cudaSuccess) return fail("cudaEventCreate_start", err);
     if ((err = cudaEventCreate(&stop)) != cudaSuccess) return fail("cudaEventCreate_stop", err);
 
+    BubbleHintApi bubble_hints;
+    std::thread hp_hint_thread;
+    if (opts.bubble_smoke != "none") {
+        bubble_hints = ResolveBubbleHintApi();
+        metrics.bubble_hint_api_available =
+            bubble_hints.open != nullptr && bubble_hints.close != nullptr &&
+            bubble_hints.hp_enqueue != nullptr && bubble_hints.hp_queue_empty != nullptr &&
+            bubble_hints.get_lp_child_launch_count != nullptr &&
+            bubble_hints.get_lp_in_flight != nullptr &&
+            bubble_hints.wait_for_lp_child_launch != nullptr;
+        metrics.bubble_hint_error = bubble_hints.error;
+        if (!metrics.bubble_hint_api_available) {
+            metrics.return_code = 1;
+            metrics.status = "FAILED";
+            metrics.reason = "bubble_hint_api_unavailable";
+            EmitResult(opts, metrics);
+            return metrics.return_code;
+        }
+
+        if (opts.bubble_smoke == "explicit-open" || opts.bubble_smoke == "hp-active") {
+            bubble_hints.open();
+        } else if (opts.bubble_smoke == "fail-safe") {
+            bubble_hints.close();
+            bubble_hints.close();
+        }
+    }
+
     auto cpu_start = Clock::now();
     if ((err = cudaEventRecord(start, stream)) != cudaSuccess) return fail("cudaEventRecord_start", err);
+    std::atomic<int> hp_thread_error{0};
+    std::atomic<int> hp_sequence_error{0};
+    uint64_t hp_target_lp_launch_count = 0;
     for (int i = 0; i < opts.iterations; ++i) {
+        if (opts.bubble_smoke == "hp-active" && i == 0) {
+            hp_target_lp_launch_count = bubble_hints.get_lp_child_launch_count() + 1;
+            hp_hint_thread = std::thread([bubble_hints, dev_d, hp_target_lp_launch_count,
+                                          &hp_thread_error, &hp_sequence_error]() {
+                if (bubble_hints.wait_for_lp_child_launch(hp_target_lp_launch_count, 10000) == 0) {
+                    hp_sequence_error.store(1);
+                    return;
+                }
+                bubble_hints.hp_enqueue();
+                bubble_hints.open();
+                setenv("UXSCHED_HB_PRIORITY", "10", 1);
+                cudaStream_t hp_stream = nullptr;
+                cudaError_t hp_err = cudaStreamCreateWithFlags(&hp_stream, cudaStreamNonBlocking);
+                if (hp_err == cudaSuccess) {
+                    BubbleSmokeHpKernel<<<1, 32, 0, hp_stream>>>(dev_d);
+                    hp_err = cudaGetLastError();
+                }
+                if (hp_err == cudaSuccess) {
+                    hp_err = cudaStreamSynchronize(hp_stream);
+                }
+                if (hp_stream != nullptr) cudaStreamDestroy(hp_stream);
+                unsetenv("UXSCHED_HB_PRIORITY");
+                if (hp_err != cudaSuccess) hp_thread_error.store(static_cast<int>(hp_err));
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                bubble_hints.hp_queue_empty();
+                bubble_hints.open();
+            });
+        }
         status = gemm.run(stream);
         if (status != cutlass::Status::kSuccess) {
+            if (hp_hint_thread.joinable()) hp_hint_thread.join();
+            if ((opts.bubble_smoke == "no-hint" || opts.bubble_smoke == "fail-safe") &&
+                status != cutlass::Status::kSuccess) {
+                metrics.return_code = 0;
+                metrics.status = "EXPECTED_DEFERRED";
+                metrics.reason = "BUBBLE_DEFERRED";
+                metrics.cutlass_status = cutlassGetStatusString(status);
+                EmitResult(opts, metrics);
+                return metrics.return_code;
+            }
             metrics.return_code = 1;
             metrics.status = "FAILED";
             metrics.reason = "cutlass_run_failed";
@@ -407,6 +550,22 @@ int RunRuntimeMode(const Options &opts)
             EmitResult(opts, metrics);
             return metrics.return_code;
         }
+    }
+    if (hp_hint_thread.joinable()) hp_hint_thread.join();
+    if (hp_sequence_error.load() != 0) {
+        metrics.return_code = 1;
+        metrics.status = "FAILED";
+        metrics.reason = "first_lp_child_not_launched_before_hp_enqueue";
+        metrics.cutlass_status = "bubble_smoke_sequence_failed";
+        EmitResult(opts, metrics);
+        return metrics.return_code;
+    }
+    if (hp_thread_error.load() != 0) {
+        return fail("bubble_smoke_hp_launch_failed",
+                    static_cast<cudaError_t>(hp_thread_error.load()));
+    }
+    if (opts.bubble_smoke == "explicit-open" || opts.bubble_smoke == "hp-active") {
+        bubble_hints.close();
     }
     if ((err = cudaEventRecord(stop, stream)) != cudaSuccess) return fail("cudaEventRecord_stop", err);
     if ((err = cudaEventSynchronize(stop)) != cudaSuccess) return fail("cudaEventSynchronize_stop", err);

@@ -52,7 +52,7 @@ function(configure_uxsched_cutlass_target target)
     $<$<COMPILE_LANGUAGE:CUDA>:--compress-mode=none>
   )
 
-  target_link_libraries(${target} PRIVATE CUDA::cudart)
+  target_link_libraries(${target} PRIVATE CUDA::cudart ${CMAKE_DL_LIBS})
 
   set_target_properties(${target} PROPERTIES
     CUDA_ARCHITECTURES "120-real;120-virtual"

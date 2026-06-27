@@ -1,4 +1,5 @@
 #include "xsched/cuda/hal/hb_split/backend.h"
+#include "xsched/cuda/hal/hb_split/bubble_controller.h"
 
 // PTX offset injection and grid decomposition are adapted from the local
 // Hummingbird prototype in /home/zm/project/hummingbird/kernel_splitter.
@@ -10,6 +11,8 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -104,12 +107,35 @@ struct SplitCommandGroup
     std::atomic<size_t> completed{0};
     CUresult first_error = CUDA_SUCCESS;
     std::vector<std::shared_ptr<CudaKernelLaunchCommand>> children;
+    std::vector<SplitSpec> splits;
+    std::vector<uint64_t> child_launch_ids;
+    std::shared_ptr<preempt::XQueue> xqueue;
+    CUfunction transformed_function = nullptr;
+    CUstream stream = nullptr;
+    uint64_t parent_launch_id = 0;
+    int64_t task_priority = 0;
+    std::atomic<size_t> next_to_submit{0};
+    std::atomic<bool> finished{false};
+    std::mutex submit_mu;
+    std::mutex completion_mu;
+    std::condition_variable completion_cv;
 };
 
 std::mutex g_mu;
 std::unordered_map<CUmodule, ModuleInfo> g_modules;
 std::unordered_map<CUfunction, FunctionInfo> g_functions;
 std::unordered_set<XQueueHandle> g_threshold_adjusted_xqueues;
+
+std::mutex g_bubble_mu;
+BubbleAwareController g_bubble_controller;
+std::once_flag g_bubble_config_once;
+bool g_bubble_log_enabled = false;
+bool g_bubble_enabled = false;
+std::vector<std::weak_ptr<SplitCommandGroup>> g_bubble_pending_groups;
+std::atomic<uint64_t> g_next_bubble_parent_id{1};
+std::atomic<uint64_t> g_next_bubble_child_id{1};
+std::mutex g_bubble_launch_mu;
+std::condition_variable g_bubble_launch_cv;
 
 bool IsTruthyEnv(const char *name, bool fallback)
 {
@@ -197,6 +223,115 @@ bool IsLowPriority()
     return CurrentPriority() < 0;
 }
 
+const char *BubbleStateName(BubbleAwareState state)
+{
+    switch (state) {
+    case BubbleAwareState::kDisabled: return "DISABLED";
+    case BubbleAwareState::kClosed: return "CLOSED";
+    case BubbleAwareState::kOpen: return "OPEN";
+    case BubbleAwareState::kHpActive: return "HP_ACTIVE";
+    }
+    return "UNKNOWN";
+}
+
+const char *BubbleRejectReasonName(BubbleRejectReason reason)
+{
+    switch (reason) {
+    case BubbleRejectReason::kNone: return "NONE";
+    case BubbleRejectReason::kDisabled: return "DISABLED";
+    case BubbleRejectReason::kNoHint: return "NO_BUBBLE_HINT";
+    case BubbleRejectReason::kHpPending: return "HP_PENDING";
+    case BubbleRejectReason::kLpInFlight: return "LP_IN_FLIGHT";
+    case BubbleRejectReason::kFailSafe: return "FAIL_SAFE";
+    }
+    return "UNKNOWN";
+}
+
+uint64_t NowNs()
+{
+    return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+void ConfigureBubbleAwareOnce()
+{
+    std::call_once(g_bubble_config_once, []() {
+        g_bubble_enabled = IsTruthyEnv("UXSCHED_BUBBLE_AWARE", false);
+        g_bubble_log_enabled = g_bubble_enabled && IsTruthyEnv("UXSCHED_BUBBLE_LOG", true);
+        const bool fail_safe = IsTruthyEnv("UXSCHED_BUBBLE_FAIL_SAFE", true);
+        int64_t max_in_flight = EnvInt64("UXSCHED_BUBBLE_MAX_IN_FLIGHT", 1);
+        if (max_in_flight != 1) {
+            XWARN("[UXSCHED-BUBBLE] UXSCHED_BUBBLE_MAX_IN_FLIGHT=" FMT_64D
+                  " unsupported; clamping to 1", max_in_flight);
+            max_in_flight = 1;
+        }
+        g_bubble_controller.Configure(g_bubble_enabled, (uint32_t)max_in_flight, fail_safe);
+        if (g_bubble_enabled) {
+            XINFO("[UXSCHED-BUBBLE] bubble_aware_enabled=1 bubble_hint_mode=explicit "
+                  "lp_in_flight_threshold=1 fail_safe=%d", fail_safe ? 1 : 0);
+        }
+    });
+}
+
+bool BubbleAwareEnabled()
+{
+    ConfigureBubbleAwareOnce();
+    return g_bubble_enabled;
+}
+
+void LogBubbleEvent(const char *event, const BubbleAwareSnapshot &snapshot,
+                    int64_t task_priority, uint64_t parent_launch_id,
+                    uint64_t child_launch_id, const char *reason = nullptr)
+{
+    if (!g_bubble_log_enabled) return;
+    XINFO("[UXSCHED-BUBBLE] timestamp_ns=" FMT_64U " event=%s task_priority=" FMT_64D
+          " task_role=%s bubble_state=%s hp_pending=%u lp_in_flight=%u "
+          "parent_launch_id=" FMT_64U " child_launch_id=" FMT_64U
+          " reason=%s bubble_hint_mode=explicit",
+          NowNs(), event, task_priority, task_priority < 0 ? "LP" : "HP",
+          BubbleStateName(snapshot.state), snapshot.hp_pending, snapshot.lp_in_flight,
+          parent_launch_id, child_launch_id, reason == nullptr ? "NONE" : reason);
+}
+
+void LogBubbleStats()
+{
+    ConfigureBubbleAwareOnce();
+    if (!g_bubble_enabled || !g_bubble_log_enabled) return;
+    const BubbleAwareSnapshot s = g_bubble_controller.Snapshot();
+    const BubbleAwareStats &st = s.stats;
+    XINFO("[UXSCHED-BUBBLE] bubble_stats bubble_aware_enabled=1 bubble_hint_mode=explicit "
+          "bubble_open_count=" FMT_64U " bubble_close_count=" FMT_64U
+          " bubble_fill_attempt_count=" FMT_64U
+          " bubble_fill_success_count=" FMT_64U
+          " bubble_fill_rejected_count=" FMT_64U
+          " bubble_reject_hp_pending_count=" FMT_64U
+          " bubble_reject_no_hint_count=" FMT_64U
+          " bubble_reject_lp_in_flight_count=" FMT_64U
+          " lp_child_launched_in_bubble_count=" FMT_64U
+          " hp_arrival_during_lp_child_count=" FMT_64U
+          " stop_new_lp_on_hp_count=" FMT_64U
+          " max_lp_in_flight=" FMT_64U
+          " bubble_fail_safe_count=" FMT_64U
+          " final_state=%s hp_pending=%u lp_in_flight=%u",
+          st.bubble_open_count, st.bubble_close_count, st.bubble_fill_attempt_count,
+          st.bubble_fill_success_count, st.bubble_fill_rejected_count,
+          st.bubble_reject_hp_pending_count, st.bubble_reject_no_hint_count,
+          st.bubble_reject_lp_in_flight_count, st.lp_child_launched_in_bubble_count,
+          st.hp_arrival_during_lp_child_count, st.stop_new_lp_on_hp_count,
+          st.max_lp_in_flight, st.bubble_fail_safe_count, BubbleStateName(s.state),
+          s.hp_pending, s.lp_in_flight);
+}
+
+struct BubbleStatsAtExit
+{
+    ~BubbleStatsAtExit()
+    {
+        LogBubbleStats();
+    }
+};
+
+BubbleStatsAtExit g_bubble_stats_at_exit;
+
 bool Lv1Compatible()
 {
     return EnvInt64(XSCHED_AUTO_XQUEUE_LEVEL_ENV_NAME, 1) <= 1;
@@ -232,8 +367,11 @@ void LogConfigOnce()
 void LogFallback(const char *reason, const FunctionInfo *info = nullptr)
 {
     if (!HbLogEnabled()) return;
-    XINFO("[UXSCHED-HB] backend_selected=NATIVE reason=%s function=%s priority=" FMT_64D,
-          reason, info == nullptr ? "<unknown>" : info->kernel_name.c_str(), CurrentPriority());
+    const int64_t priority = CurrentPriority();
+    XINFO("[UXSCHED-HB] backend_selected=NATIVE backend=NATIVE reason=%s function=%s "
+          "task_priority=" FMT_64D " priority=" FMT_64D " task_role=%s is_fallback=1",
+          reason, info == nullptr ? "<unknown>" : info->kernel_name.c_str(), priority,
+          priority, priority < 0 ? "LP" : "HP");
 }
 
 bool IsSpace(char c)
@@ -804,29 +942,114 @@ void SetLpSplitThresholdOnce(std::shared_ptr<preempt::XQueue> xqueue)
     }
 }
 
-bool SubmitSplitCommands(const FunctionInfo &info, Grid3D grid, Grid3D block,
-                         unsigned int shared_mem_bytes, CUstream stream, void **kernel_params,
-                         std::shared_ptr<preempt::XQueue> xqueue, CUresult *result)
+void CleanupBubblePendingGroups()
+{
+    std::lock_guard<std::mutex> lock(g_bubble_mu);
+    g_bubble_pending_groups.erase(
+        std::remove_if(g_bubble_pending_groups.begin(), g_bubble_pending_groups.end(),
+                       [](const std::weak_ptr<SplitCommandGroup> &weak) {
+                           auto group = weak.lock();
+                           return group == nullptr || group->finished.load();
+                       }),
+        g_bubble_pending_groups.end());
+}
+
+void RegisterBubblePendingGroup(const std::shared_ptr<SplitCommandGroup> &group)
+{
+    std::lock_guard<std::mutex> lock(g_bubble_mu);
+    g_bubble_pending_groups.push_back(group);
+}
+
+bool TrySubmitNextBubbleChild(const std::shared_ptr<SplitCommandGroup> &group)
+{
+    if (group == nullptr || group->finished.load()) return false;
+    if (!BubbleAwareEnabled()) return false;
+
+    size_t child_idx = 0;
+    uint64_t child_launch_id = 0;
+    std::shared_ptr<CudaKernelLaunchCommand> child;
+    SplitSpec split;
+    {
+        std::lock_guard<std::mutex> lock(group->submit_mu);
+        child_idx = group->next_to_submit.load();
+        if (child_idx >= group->children.size()) return false;
+
+        LogBubbleEvent("bubble_fill_attempt", g_bubble_controller.Snapshot(),
+                       group->task_priority, group->parent_launch_id,
+                       group->child_launch_ids[child_idx]);
+        BubbleSubmitDecision decision = g_bubble_controller.TryAcquireLpChildSlot();
+        if (!decision.allowed) {
+            LogBubbleEvent("bubble_fill_rejected", decision.snapshot, group->task_priority,
+                           group->parent_launch_id, group->child_launch_ids[child_idx],
+                           BubbleRejectReasonName(decision.reason));
+            return false;
+        }
+
+        group->next_to_submit.store(child_idx + 1);
+        child = group->children[child_idx];
+        child_launch_id = group->child_launch_ids[child_idx];
+        split = group->splits[child_idx];
+        LogBubbleEvent("lp_child_launch_in_bubble", decision.snapshot, group->task_priority,
+                       group->parent_launch_id, child_launch_id, "ALLOW");
+    }
+    g_bubble_launch_cv.notify_all();
+
+    if (HbLogEnabled()) {
+        XINFO("[UXSCHED-HB] child_launch_submitted function=%s child_index=%zu "
+              "split_count=%zu transformed_function=%p grid=(%u,%u,%u) "
+              "offset=(%u,%u,%u) xqueue=0x" FMT_64X " stream=%p bubble_aware=1 "
+              "parent_launch_id=" FMT_64U " child_launch_id=" FMT_64U,
+              group->kernel_name.c_str(), child_idx, group->split_count,
+              group->transformed_function, split.grid.x, split.grid.y, split.grid.z,
+              split.offset[0], split.offset[1], split.offset[2],
+              group->xqueue == nullptr ? 0 : group->xqueue->GetHandle(), group->stream,
+              group->parent_launch_id, child_launch_id);
+    }
+    group->xqueue->Submit(child);
+    return true;
+}
+
+void DrainBubblePendingGroups()
+{
+    std::vector<std::shared_ptr<SplitCommandGroup>> groups;
+    {
+        std::lock_guard<std::mutex> lock(g_bubble_mu);
+        groups.reserve(g_bubble_pending_groups.size());
+        for (const auto &weak : g_bubble_pending_groups) {
+            if (auto group = weak.lock()) groups.push_back(group);
+        }
+    }
+    for (const auto &group : groups) {
+        (void)TrySubmitNextBubbleChild(group);
+    }
+    CleanupBubblePendingGroups();
+}
+
+LaunchDisposition SubmitSplitCommands(const FunctionInfo &info, Grid3D grid, Grid3D block,
+                                       unsigned int shared_mem_bytes, CUstream stream,
+                                       void **kernel_params,
+                                       std::shared_ptr<preempt::XQueue> xqueue,
+                                       CUresult *result)
 {
     std::string grid_reason;
     if (!CapabilitySupportsGrid(info, grid, &grid_reason)) {
         if (StrictMode()) {
             if (result != nullptr) *result = CUDA_ERROR_NOT_SUPPORTED;
             LogFallback(grid_reason.c_str(), &info);
-            return true;
+            return LaunchDisposition::kSubmitted;
         }
         LogFallback(grid_reason.c_str(), &info);
-        return false;
+        return LaunchDisposition::kFailed;
     }
 
     std::vector<SplitSpec> splits = DecomposeGrid(grid, SplitBlocks());
     if (splits.empty()) {
         if (result != nullptr) *result = CUDA_ERROR_INVALID_VALUE;
-        return true;
+        return LaunchDisposition::kSubmitted;
     }
     if (splits.size() <= 1) {
         LogFallback("GRID_SMALLER_THAN_SPLIT_BLOCKS", &info);
-        return false;
+        return LaunchDisposition::kFailed;
     }
 
     const size_t transformed_param_count = cuXtraGetParamCount(info.transformed_function);
@@ -838,13 +1061,20 @@ bool SubmitSplitCommands(const FunctionInfo &info, Grid3D grid, Grid3D block,
                   info.kernel_name.c_str(), info.original_param_count + kOffsetParamCount,
                   transformed_param_count);
         }
-        return StrictMode();
+        return StrictMode() ? LaunchDisposition::kSubmitted : LaunchDisposition::kFailed;
     }
 
     auto group = std::make_shared<SplitCommandGroup>();
     group->kernel_name = info.kernel_name;
     group->split_count = splits.size();
     group->children.reserve(splits.size());
+    group->splits = splits;
+    group->child_launch_ids.reserve(splits.size());
+    group->xqueue = xqueue;
+    group->transformed_function = info.transformed_function;
+    group->stream = stream;
+    group->parent_launch_id = g_next_bubble_parent_id.fetch_add(1);
+    group->task_priority = CurrentPriority();
 
     SetLpSplitThresholdOnce(xqueue);
 
@@ -861,15 +1091,29 @@ bool SubmitSplitCommands(const FunctionInfo &info, Grid3D grid, Grid3D block,
         auto cmd = std::make_shared<CudaKernelLaunchCommand>(
             info.transformed_function, split.grid.x, split.grid.y, split.grid.z,
             block.x, block.y, block.z, shared_mem_bytes, params.data(), nullptr, true);
-        cmd->AddStateListener([group, child_idx](preempt::XCommandState state) {
+        const uint64_t child_launch_id = g_next_bubble_child_id.fetch_add(1);
+        group->child_launch_ids.push_back(child_launch_id);
+
+        cmd->AddStateListener([group, child_idx, child_launch_id](preempt::XCommandState state) {
             if (state < preempt::kCommandStateCompleted) return;
+            if (BubbleAwareEnabled()) {
+                g_bubble_controller.OnLpChildComplete();
+                LogBubbleEvent("lp_child_complete", g_bubble_controller.Snapshot(),
+                               group->task_priority, group->parent_launch_id, child_launch_id);
+            }
             if (HbLogEnabled()) {
                 XINFO("[UXSCHED-HB] child_launch_completed function=%s child_index=%zu "
-                      "split_count=%zu",
-                      group->kernel_name.c_str(), child_idx, group->split_count);
+                      "split_count=%zu parent_launch_id=" FMT_64U
+                      " child_launch_id=" FMT_64U,
+                      group->kernel_name.c_str(), child_idx, group->split_count,
+                      group->parent_launch_id, child_launch_id);
             }
             const size_t done = group->completed.fetch_add(1) + 1;
             if (done == group->split_count) {
+                {
+                    std::lock_guard<std::mutex> lock(group->completion_mu);
+                    group->finished.store(true);
+                }
                 if (HbLogEnabled()) {
                     XINFO("[UXSCHED-HB] split_group_completed function=%s split_count=%zu",
                           group->kernel_name.c_str(), group->split_count);
@@ -877,6 +1121,10 @@ bool SubmitSplitCommands(const FunctionInfo &info, Grid3D grid, Grid3D block,
                           group->kernel_name.c_str(), group->split_count);
                 }
                 group->children.clear();
+                CleanupBubblePendingGroups();
+                group->completion_cv.notify_all();
+            } else if (BubbleAwareEnabled()) {
+                (void)TrySubmitNextBubbleChild(group);
             }
         });
         group->children.push_back(cmd);
@@ -888,10 +1136,46 @@ bool SubmitSplitCommands(const FunctionInfo &info, Grid3D grid, Grid3D block,
               "backend_selected=HB_SPLIT stream=%p",
               info.kernel_name.c_str(), CurrentPriority(), grid.x, grid.y, grid.z,
               SplitBlocks(), splits.size(), stream);
+    }
+
+    if (BubbleAwareEnabled()) {
+        RegisterBubblePendingGroup(group);
+        if (!TrySubmitNextBubbleChild(group)) {
+            group->finished.store(true);
+            CleanupBubblePendingGroups();
+            if (result != nullptr) *result = CUDA_ERROR_NOT_READY;
+            if (HbLogEnabled()) {
+                XINFO("[UXSCHED-HB] backend_deferred reason=BUBBLE_GATE_CLOSED "
+                      "function=%s priority=" FMT_64D " split_count=%zu "
+                      "parent_launch_id=" FMT_64U,
+                      info.kernel_name.c_str(), CurrentPriority(), group->split_count,
+                      group->parent_launch_id);
+            }
+            return LaunchDisposition::kDeferredByBubbleGate;
+        }
+        if (HbLogEnabled()) {
+            XINFO("[UXSCHED-HB] parent_launch_submitted function=%s split_count=%zu "
+                  "transformed_function=%p xqueue=0x" FMT_64X " stream=%p "
+                  "parent_launch_id=" FMT_64U " bubble_aware=1",
+                  info.kernel_name.c_str(), splits.size(), info.transformed_function,
+                  xqueue == nullptr ? 0 : xqueue->GetHandle(), stream,
+                  group->parent_launch_id);
+        }
+        {
+            std::unique_lock<std::mutex> lock(group->completion_mu);
+            group->completion_cv.wait(lock, [&group]() { return group->finished.load(); });
+        }
+        if (result != nullptr) *result = CUDA_SUCCESS;
+        return LaunchDisposition::kSubmitted;
+    }
+
+    if (HbLogEnabled()) {
         XINFO("[UXSCHED-HB] parent_launch_submitted function=%s split_count=%zu "
-              "transformed_function=%p xqueue=0x" FMT_64X " stream=%p",
+              "transformed_function=%p xqueue=0x" FMT_64X " stream=%p "
+              "parent_launch_id=" FMT_64U " bubble_aware=0",
               info.kernel_name.c_str(), splits.size(), info.transformed_function,
-              xqueue == nullptr ? 0 : xqueue->GetHandle(), stream);
+              xqueue == nullptr ? 0 : xqueue->GetHandle(), stream,
+              group->parent_launch_id);
     }
 
     for (size_t child_idx = 0; child_idx < group->children.size(); ++child_idx) {
@@ -899,16 +1183,18 @@ bool SubmitSplitCommands(const FunctionInfo &info, Grid3D grid, Grid3D block,
         if (HbLogEnabled()) {
             XINFO("[UXSCHED-HB] child_launch_submitted function=%s child_index=%zu "
                   "split_count=%zu transformed_function=%p grid=(%u,%u,%u) "
-                  "offset=(%u,%u,%u) xqueue=0x" FMT_64X " stream=%p",
+                  "offset=(%u,%u,%u) xqueue=0x" FMT_64X " stream=%p "
+                  "parent_launch_id=" FMT_64U " child_launch_id=" FMT_64U,
                   info.kernel_name.c_str(), child_idx, group->split_count,
                   info.transformed_function, split.grid.x, split.grid.y, split.grid.z,
                   split.offset[0], split.offset[1], split.offset[2],
-                  xqueue == nullptr ? 0 : xqueue->GetHandle(), stream);
+                  xqueue == nullptr ? 0 : xqueue->GetHandle(), stream,
+                  group->parent_launch_id, group->child_launch_ids[child_idx]);
         }
         xqueue->Submit(group->children[child_idx]);
     }
     if (result != nullptr) *result = CUDA_SUCCESS;
-    return true;
+    return LaunchDisposition::kSubmitted;
 }
 
 } // namespace
@@ -1043,31 +1329,91 @@ bool LookupFunctionMetadata(CUfunction function, std::string *kernel_name,
     return true;
 }
 
-bool TryLaunchKernelFixed(CUfunction function,
-                          unsigned int grid_dim_x, unsigned int grid_dim_y, unsigned int grid_dim_z,
-                          unsigned int block_dim_x, unsigned int block_dim_y, unsigned int block_dim_z,
-                          unsigned int shared_mem_bytes, CUstream stream, void **kernel_params,
-                          void **extra, std::shared_ptr<preempt::XQueue> xqueue, CUresult *result)
+void BubbleOpenHint()
+{
+    ConfigureBubbleAwareOnce();
+    if (!g_bubble_enabled) return;
+    g_bubble_controller.OnBubbleOpen();
+    LogBubbleEvent("bubble_open", g_bubble_controller.Snapshot(), CurrentPriority(), 0, 0);
+    DrainBubblePendingGroups();
+}
+
+void BubbleCloseHint()
+{
+    ConfigureBubbleAwareOnce();
+    if (!g_bubble_enabled) return;
+    g_bubble_controller.OnBubbleClose();
+    LogBubbleEvent("bubble_close", g_bubble_controller.Snapshot(), CurrentPriority(), 0, 0);
+}
+
+void BubbleHpEnqueueHint()
+{
+    ConfigureBubbleAwareOnce();
+    if (!g_bubble_enabled) return;
+    g_bubble_controller.OnHpEnqueue();
+    LogBubbleEvent("hp_enqueue", g_bubble_controller.Snapshot(), CurrentPriority(), 0, 0,
+                   "stop_new_lp_launches");
+}
+
+void BubbleHpQueueEmptyHint()
+{
+    ConfigureBubbleAwareOnce();
+    if (!g_bubble_enabled) return;
+    g_bubble_controller.OnHpQueueEmpty();
+    LogBubbleEvent("hp_queue_empty", g_bubble_controller.Snapshot(), CurrentPriority(), 0, 0);
+}
+
+uint64_t BubbleGetLpChildLaunchCount()
+{
+    ConfigureBubbleAwareOnce();
+    return g_bubble_controller.Snapshot().stats.lp_child_launched_in_bubble_count;
+}
+
+uint64_t BubbleGetLpInFlight()
+{
+    ConfigureBubbleAwareOnce();
+    return g_bubble_controller.Snapshot().lp_in_flight;
+}
+
+bool BubbleWaitForLpChildLaunch(uint64_t target_count, uint32_t timeout_ms)
+{
+    ConfigureBubbleAwareOnce();
+    std::unique_lock<std::mutex> lock(g_bubble_launch_mu);
+    return g_bubble_launch_cv.wait_for(
+        lock, std::chrono::milliseconds(timeout_ms), [target_count]() {
+            return g_bubble_controller.Snapshot().stats.lp_child_launched_in_bubble_count >=
+                   target_count;
+        });
+}
+
+LaunchDisposition LaunchKernelFixed(CUfunction function,
+                                     unsigned int grid_dim_x, unsigned int grid_dim_y,
+                                     unsigned int grid_dim_z, unsigned int block_dim_x,
+                                     unsigned int block_dim_y, unsigned int block_dim_z,
+                                     unsigned int shared_mem_bytes, CUstream stream,
+                                     void **kernel_params, void **extra,
+                                     std::shared_ptr<preempt::XQueue> xqueue, CUresult *result)
 {
     LogConfigOnce();
     if (result != nullptr) *result = CUDA_SUCCESS;
-    if (!BuildEnabled()) return false;
+    if (!BuildEnabled()) return LaunchDisposition::kFailed;
 
     if (!Lv1Compatible()) {
         LogFallback("LV2_LV3_UNSUPPORTED_WITH_HB_SPLIT");
         if (StrictMode()) {
             if (result != nullptr) *result = CUDA_ERROR_NOT_SUPPORTED;
-            return true;
+            return LaunchDisposition::kSubmitted;
         }
-        return false;
+        return LaunchDisposition::kFailed;
     }
 
     if (!IsLowPriority()) {
         if (HbLogEnabled()) {
-            XINFO("[UXSCHED-HB] backend_selected=NATIVE reason=HIGH_PRIORITY_PASSTHROUGH "
-                  "priority=" FMT_64D " function=%p", CurrentPriority(), function);
+            XINFO("[UXSCHED-HB] backend_selected=NATIVE backend=NATIVE "
+                  "reason=HIGH_PRIORITY_PASSTHROUGH task_priority=" FMT_64D
+                  " task_role=HP is_fallback=0 function=%p", CurrentPriority(), function);
         }
-        return false;
+        return LaunchDisposition::kPassthrough;
     }
 
     const auto info_opt = FindFunctionInfo(function);
@@ -1075,9 +1421,9 @@ bool TryLaunchKernelFixed(CUfunction function,
         LogFallback("PTX_UNAVAILABLE");
         if (StrictMode()) {
             if (result != nullptr) *result = CUDA_ERROR_NOT_SUPPORTED;
-            return true;
+            return LaunchDisposition::kSubmitted;
         }
-        return false;
+        return LaunchDisposition::kFailed;
     }
     FunctionInfo info = *info_opt;
 
@@ -1085,44 +1431,57 @@ bool TryLaunchKernelFixed(CUfunction function,
         LogFallback("NO_XQUEUE", &info);
         if (StrictMode()) {
             if (result != nullptr) *result = CUDA_ERROR_NOT_SUPPORTED;
-            return true;
+            return LaunchDisposition::kSubmitted;
         }
-        return false;
+        return LaunchDisposition::kFailed;
     }
     if (!info.capability.splittable || info.transformed_function == nullptr) {
         LogFallback(info.capability.fallback_reason.empty() ? "NOT_SPLITTABLE"
                                                             : info.capability.fallback_reason.c_str(), &info);
         if (StrictMode()) {
             if (result != nullptr) *result = CUDA_ERROR_NOT_SUPPORTED;
-            return true;
+            return LaunchDisposition::kSubmitted;
         }
-        return false;
+        return LaunchDisposition::kFailed;
     }
     if (extra != nullptr) {
         LogFallback("EXTRA_LAUNCH_FORMAT_UNSUPPORTED", &info);
         if (StrictMode()) {
             if (result != nullptr) *result = CUDA_ERROR_NOT_SUPPORTED;
-            return true;
+            return LaunchDisposition::kSubmitted;
         }
-        return false;
+        return LaunchDisposition::kFailed;
     }
     if (kernel_params == nullptr) {
         LogFallback("KERNEL_PARAMS_NULL", &info);
         if (StrictMode()) {
             if (result != nullptr) *result = CUDA_ERROR_INVALID_VALUE;
-            return true;
+            return LaunchDisposition::kSubmitted;
         }
-        return false;
+        return LaunchDisposition::kFailed;
     }
 
     const Grid3D grid{grid_dim_x, grid_dim_y, grid_dim_z};
     const Grid3D block{block_dim_x, block_dim_y, block_dim_z};
     if (Volume(grid) <= (uint64_t)SplitBlocks()) {
         LogFallback("GRID_SMALLER_THAN_SPLIT_BLOCKS", &info);
-        return false;
+        return LaunchDisposition::kFailed;
     }
 
     return SubmitSplitCommands(info, grid, block, shared_mem_bytes, stream, kernel_params, xqueue, result);
+}
+
+bool TryLaunchKernelFixed(CUfunction function,
+                          unsigned int grid_dim_x, unsigned int grid_dim_y, unsigned int grid_dim_z,
+                          unsigned int block_dim_x, unsigned int block_dim_y, unsigned int block_dim_z,
+                          unsigned int shared_mem_bytes, CUstream stream, void **kernel_params,
+                          void **extra, std::shared_ptr<preempt::XQueue> xqueue, CUresult *result)
+{
+    return LaunchKernelFixed(function,
+                             grid_dim_x, grid_dim_y, grid_dim_z,
+                             block_dim_x, block_dim_y, block_dim_z,
+                             shared_mem_bytes, stream, kernel_params, extra,
+                             xqueue, result) == LaunchDisposition::kSubmitted;
 }
 
 bool TryLaunchKernel(CUfunction function,
@@ -1133,11 +1492,46 @@ bool TryLaunchKernel(CUfunction function,
 {
     const BackendMode mode = BackendModeFromEnv();
     if (mode == BackendMode::kNative) return false;
-    return TryLaunchKernelFixed(function,
-                                grid_dim_x, grid_dim_y, grid_dim_z,
-                                block_dim_x, block_dim_y, block_dim_z,
-                                shared_mem_bytes, stream, kernel_params, extra,
-                                xqueue, result);
+    return LaunchKernelFixed(function,
+                             grid_dim_x, grid_dim_y, grid_dim_z,
+                             block_dim_x, block_dim_y, block_dim_z,
+                             shared_mem_bytes, stream, kernel_params, extra,
+                             xqueue, result) == LaunchDisposition::kSubmitted;
 }
 
 } // namespace xsched::cuda::hb_split
+
+extern "C" void UXSchedBubbleOpenHint()
+{
+    xsched::cuda::hb_split::BubbleOpenHint();
+}
+
+extern "C" void UXSchedBubbleCloseHint()
+{
+    xsched::cuda::hb_split::BubbleCloseHint();
+}
+
+extern "C" void UXSchedBubbleHpEnqueueHint()
+{
+    xsched::cuda::hb_split::BubbleHpEnqueueHint();
+}
+
+extern "C" void UXSchedBubbleHpQueueEmptyHint()
+{
+    xsched::cuda::hb_split::BubbleHpQueueEmptyHint();
+}
+
+extern "C" uint64_t UXSchedBubbleGetLpChildLaunchCount()
+{
+    return xsched::cuda::hb_split::BubbleGetLpChildLaunchCount();
+}
+
+extern "C" uint64_t UXSchedBubbleGetLpInFlight()
+{
+    return xsched::cuda::hb_split::BubbleGetLpInFlight();
+}
+
+extern "C" int UXSchedBubbleWaitForLpChildLaunch(uint64_t target_count, uint32_t timeout_ms)
+{
+    return xsched::cuda::hb_split::BubbleWaitForLpChildLaunch(target_count, timeout_ms) ? 1 : 0;
+}

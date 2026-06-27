@@ -109,13 +109,20 @@ SubmitResult HummingbirdRuntimeStrategy::SubmitKernel(const KernelLaunch &launch
 
     if (mode_ == RuntimeStrategyMode::kHbFixed) {
         CUresult ret = CUDA_SUCCESS;
-        if (hb_split::TryLaunchKernelFixed(
-                launch.function,
-                launch.grid_dim_x, launch.grid_dim_y, launch.grid_dim_z,
-                launch.block_dim_x, launch.block_dim_y, launch.block_dim_z,
-                launch.shared_mem_bytes, launch.stream, launch.kernel_params,
-                launch.extra, launch.xqueue, &ret)) {
+        const hb_split::LaunchDisposition disposition = hb_split::LaunchKernelFixed(
+            launch.function,
+            launch.grid_dim_x, launch.grid_dim_y, launch.grid_dim_z,
+            launch.block_dim_x, launch.block_dim_y, launch.block_dim_z,
+            launch.shared_mem_bytes, launch.stream, launch.kernel_params,
+            launch.extra, launch.xqueue, &ret);
+        if (disposition == hb_split::LaunchDisposition::kSubmitted) {
             return SubmitResult::Submitted(ret);
+        }
+        if (disposition == hb_split::LaunchDisposition::kDeferredByBubbleGate) {
+            return SubmitResult::Submitted(ret);
+        }
+        if (disposition == hb_split::LaunchDisposition::kPassthrough) {
+            return SubmitResult::Passthrough("HIGH_PRIORITY_PASSTHROUGH");
         }
         return SubmitResult::Fallback("HB_FIXED_FALLBACK_NATIVE");
     }
@@ -169,6 +176,17 @@ SubmitResult SubmitKernelWithRuntimeStrategy(const KernelLaunch &launch)
     }
     SubmitResult hb_result = hb.SubmitKernel(launch);
     if (hb_result.status == SubmitStatus::kSubmitted) return hb_result;
+
+    if (hb_result.status == SubmitStatus::kPassthroughNative) {
+        if (XQueueTraceEnabled()) {
+            XINFO("[UXSCHED-XQUEUE] runtime_strategy_passthrough mode=%s reason=%s "
+                  "KernelLaunch.xqueue=%p",
+                  RuntimeStrategyModeName(mode), hb_result.fallback_reason.c_str(),
+                  launch.xqueue.get());
+        }
+        NativeRuntimeStrategy native;
+        return native.SubmitKernel(launch);
+    }
 
     if (XQueueTraceEnabled()) {
         XINFO("[UXSCHED-XQUEUE] runtime_strategy_fallback mode=%s reason=%s "

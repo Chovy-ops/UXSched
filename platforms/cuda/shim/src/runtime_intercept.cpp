@@ -438,6 +438,11 @@ int64_t CurrentRuntimePriority()
     return (int64_t)value;
 }
 
+const char *RuntimeTaskRole(int64_t priority)
+{
+    return priority < 0 ? "LP" : "HP";
+}
+
 } // namespace
 
 EXPORT_C_FUNC void **__cudaRegisterFatBinary(void *fat_cubin)
@@ -513,28 +518,36 @@ EXPORT_C_FUNC cudaError_t cudaLaunchKernel(const void *func, dim3 grid_dim, dim3
 {
     const auto mode = xsched::cuda::runtime::CurrentRuntimeStrategyMode();
     CUstream cu_stream = reinterpret_cast<CUstream>(stream);
+    const int64_t priority = CurrentRuntimePriority();
+    const char *task_role = RuntimeTaskRole(priority);
     CUDART_TRACE("runtime_launch_intercepted pid=" FMT_PID " tid=" FMT_TID
                  " host_stub=%p grid=(%u,%u,%u) block=(%u,%u,%u) shared_mem=%zu "
-                 "stream=%p priority=" FMT_64D " strategy=%s",
+                 "stream=%p task_priority=" FMT_64D " priority=" FMT_64D
+                 " task_role=%s strategy=%s",
                  GetProcessId(), GetThreadId(), func, grid_dim.x, grid_dim.y, grid_dim.z,
-                 block_dim.x, block_dim.y, block_dim.z, shared_mem, cu_stream,
-                 CurrentRuntimePriority(),
+                 block_dim.x, block_dim.y, block_dim.z, shared_mem, cu_stream, priority,
+                 priority, task_role,
                  xsched::cuda::runtime::RuntimeStrategyModeName(mode));
 
     if (mode != xsched::cuda::runtime::RuntimeStrategyMode::kHbFixed) {
         CUDART_TRACE("runtime_backend_selected backend=NATIVE reason=RUNTIME_STRATEGY_NATIVE "
-                     "host_stub=%p strategy=%s",
-                     func, xsched::cuda::runtime::RuntimeStrategyModeName(mode));
+                     "host_stub=%p strategy=%s task_priority=" FMT_64D
+                     " priority=" FMT_64D " task_role=%s is_fallback=0",
+                     func, xsched::cuda::runtime::RuntimeStrategyModeName(mode),
+                     priority, priority, task_role);
         return LaunchNativeRuntime(func, grid_dim, block_dim, args, shared_mem, stream);
     }
 
     RuntimeFunctionRecord record;
     ResolvedRuntimeFunction resolved = ResolveRuntimeFunction(func, &record);
     if (resolved.function == nullptr) {
-        CUDART_TRACE("runtime_launch_fallback host_stub=%p reason=%s strategy=%s",
+        CUDART_TRACE("runtime_launch_fallback host_stub=%p reason=%s strategy=%s "
+                     "backend=NATIVE task_priority=" FMT_64D " priority=" FMT_64D
+                     " task_role=%s is_fallback=1",
                      func, resolved.reason.empty() ? "RUNTIME_FUNCTION_RESOLVE_FAILED"
                                                    : resolved.reason.c_str(),
-                     xsched::cuda::runtime::RuntimeStrategyModeName(mode));
+                     xsched::cuda::runtime::RuntimeStrategyModeName(mode),
+                     priority, priority, task_role);
         return LaunchNativeRuntime(func, grid_dim, block_dim, args, shared_mem, stream);
     }
 
@@ -546,31 +559,59 @@ EXPORT_C_FUNC cudaError_t cudaLaunchKernel(const void *func, dim3 grid_dim, dim3
     auto xq = xsched::cuda::ResolveXQueueForStream("cudaLaunchKernel", cu_stream);
     if (xq == nullptr) {
         CUDART_TRACE("runtime_launch_fallback host_stub=%p kernel_name=%s "
-                     "reason=RUNTIME_NO_XQUEUE stream=%p",
-                     func, resolved.kernel_name.c_str(), cu_stream);
+                     "reason=RUNTIME_NO_XQUEUE stream=%p backend=NATIVE "
+                     "task_priority=" FMT_64D " priority=" FMT_64D
+                     " task_role=%s is_fallback=1",
+                     func, resolved.kernel_name.c_str(), cu_stream,
+                     priority, priority, task_role);
         return LaunchNativeRuntime(func, grid_dim, block_dim, args, shared_mem, stream);
     }
 
     CUresult cu_result = CUDA_SUCCESS;
-    bool submitted = xsched::cuda::hb_split::TryLaunchKernelFixed(
+    xsched::cuda::hb_split::LaunchDisposition disposition =
+        xsched::cuda::hb_split::LaunchKernelFixed(
         resolved.function, grid_dim.x, grid_dim.y, grid_dim.z, block_dim.x, block_dim.y,
         block_dim.z, (unsigned int)shared_mem, cu_stream, args, nullptr, xq, &cu_result);
 
-    if (submitted) {
+    if (disposition == xsched::cuda::hb_split::LaunchDisposition::kSubmitted) {
         CUDART_TRACE("runtime_backend_selected backend=HB_FIXED host_stub=%p kernel_name=%s "
-                     "xqueue=0x" FMT_64X " stream=%p cu_result=%d",
+                     "xqueue=0x" FMT_64X " stream=%p cu_result=%d "
+                     "task_priority=" FMT_64D " priority=" FMT_64D
+                     " task_role=%s reason=HB_FIXED_SUBMITTED is_fallback=0",
                      func, resolved.kernel_name.c_str(), xq->GetHandle(), cu_stream,
-                     (int)cu_result);
-        return cu_result == CUDA_SUCCESS ? cudaSuccess : cudaErrorUnknown;
+                     (int)cu_result, priority, priority, task_role);
+        return RuntimeErrorFromCuResult(cu_result);
+    }
+
+    if (disposition == xsched::cuda::hb_split::LaunchDisposition::kDeferredByBubbleGate) {
+        CUDART_TRACE("runtime_backend_deferred backend=HB_FIXED host_stub=%p kernel_name=%s "
+                     "reason=BUBBLE_GATE_CLOSED xqueue=0x" FMT_64X
+                     " stream=%p cu_result=%d task_priority=" FMT_64D
+                     " priority=" FMT_64D " task_role=%s is_fallback=0",
+                     func, resolved.kernel_name.c_str(), xq->GetHandle(), cu_stream,
+                     (int)cu_result, priority, priority, task_role);
+        return RuntimeErrorFromCuResult(cu_result);
+    }
+
+    if (disposition == xsched::cuda::hb_split::LaunchDisposition::kPassthrough) {
+        CUDART_TRACE("runtime_launch_passthrough backend=NATIVE host_stub=%p kernel_name=%s "
+                     "reason=HIGH_PRIORITY_PASSTHROUGH xqueue=0x" FMT_64X
+                     " stream=%p task_priority=" FMT_64D " priority=" FMT_64D
+                     " task_role=%s role=%s is_fallback=0",
+                     func, resolved.kernel_name.c_str(), xq->GetHandle(), cu_stream,
+                     priority, priority, task_role, task_role);
+        return LaunchNativeRuntime(func, grid_dim, block_dim, args, shared_mem, stream);
     }
 
     std::string hb_reason;
     (void)xsched::cuda::hb_split::LookupFunctionMetadata(resolved.function, nullptr, &hb_reason);
     CUDART_TRACE("runtime_launch_fallback host_stub=%p kernel_name=%s reason=%s "
-                 "xqueue=0x" FMT_64X " stream=%p",
+                 "xqueue=0x" FMT_64X " stream=%p backend=NATIVE "
+                 "task_priority=" FMT_64D " priority=" FMT_64D
+                 " task_role=%s is_fallback=1",
                  func, resolved.kernel_name.c_str(),
                  hb_reason.empty() ? "RUNTIME_HB_FIXED_FALLBACK_NATIVE" : hb_reason.c_str(),
-                 xq->GetHandle(), cu_stream);
+                 xq->GetHandle(), cu_stream, priority, priority, task_role);
     return LaunchNativeRuntime(func, grid_dim, block_dim, args, shared_mem, stream);
 }
 

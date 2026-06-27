@@ -28,6 +28,7 @@ enum class RuntimeStrategyMode
 enum class SubmitStatus
 {
     kSubmitted,
+    kPassthroughNative,
     kFallbackNative,
 };
 
@@ -71,6 +72,11 @@ struct SubmitResult
     static SubmitResult Fallback(std::string reason)
     {
         return SubmitResult{SubmitStatus::kFallbackNative, CUDA_SUCCESS, std::move(reason)};
+    }
+
+    static SubmitResult Passthrough(std::string reason)
+    {
+        return SubmitResult{SubmitStatus::kPassthroughNative, CUDA_SUCCESS, std::move(reason)};
     }
 };
 

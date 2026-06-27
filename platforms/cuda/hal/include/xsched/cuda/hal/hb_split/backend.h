@@ -20,6 +20,14 @@ enum class BackendMode
     kAuto,
 };
 
+enum class LaunchDisposition
+{
+    kSubmitted,
+    kDeferredByBubbleGate,
+    kPassthrough,
+    kFailed,
+};
+
 struct KernelCapability
 {
     bool ptx_available = false;
@@ -66,10 +74,34 @@ bool TryLaunchKernel(CUfunction function,
                      unsigned int shared_mem_bytes, CUstream stream, void **kernel_params,
                      void **extra, std::shared_ptr<preempt::XQueue> xqueue, CUresult *result);
 
+LaunchDisposition LaunchKernelFixed(CUfunction function,
+                                     unsigned int grid_dim_x, unsigned int grid_dim_y,
+                                     unsigned int grid_dim_z, unsigned int block_dim_x,
+                                     unsigned int block_dim_y, unsigned int block_dim_z,
+                                     unsigned int shared_mem_bytes, CUstream stream,
+                                     void **kernel_params, void **extra,
+                                     std::shared_ptr<preempt::XQueue> xqueue, CUresult *result);
+
 bool TryLaunchKernelFixed(CUfunction function,
                           unsigned int grid_dim_x, unsigned int grid_dim_y, unsigned int grid_dim_z,
                           unsigned int block_dim_x, unsigned int block_dim_y, unsigned int block_dim_z,
                           unsigned int shared_mem_bytes, CUstream stream, void **kernel_params,
                           void **extra, std::shared_ptr<preempt::XQueue> xqueue, CUresult *result);
 
+void BubbleOpenHint();
+void BubbleCloseHint();
+void BubbleHpEnqueueHint();
+void BubbleHpQueueEmptyHint();
+uint64_t BubbleGetLpChildLaunchCount();
+uint64_t BubbleGetLpInFlight();
+bool BubbleWaitForLpChildLaunch(uint64_t target_count, uint32_t timeout_ms);
+
 } // namespace xsched::cuda::hb_split
+
+extern "C" void UXSchedBubbleOpenHint();
+extern "C" void UXSchedBubbleCloseHint();
+extern "C" void UXSchedBubbleHpEnqueueHint();
+extern "C" void UXSchedBubbleHpQueueEmptyHint();
+extern "C" uint64_t UXSchedBubbleGetLpChildLaunchCount();
+extern "C" uint64_t UXSchedBubbleGetLpInFlight();
+extern "C" int UXSchedBubbleWaitForLpChildLaunch(uint64_t target_count, uint32_t timeout_ms);
