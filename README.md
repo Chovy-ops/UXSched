@@ -16,6 +16,7 @@ This repository is based on UXSched and extends its CUDA backend with:
 - stream-to-XQueue association for default and explicit CUDA streams;
 - CUTLASS Runtime launch metadata bridging;
 - fixed-size low-priority kernel splitting through `HB_FIXED`;
+- an explicit-hint conservative bubble-aware scheduling MVP;
 - correctness, synchronization, fallback, and realtime HP/LP benchmark tooling.
 
 No operating-system kernel changes and no NVIDIA driver changes are required.
@@ -28,13 +29,15 @@ Implemented and validated paths:
 - `HB_FIXED`: fixed-size splitting for verified low-priority CUDA kernels.
 - CUTLASS FP32 SIMT GEMM Runtime launch path on CUDA 12.8 / SM120.
 - Global HPF scheduling with independent HP and LP client processes.
+- Explicit-hint-driven conservative bubble-aware scheduling MVP functional
+  smoke.
 
 Intentionally not claimed as complete:
 
 - automatic split-size selection;
 - online profiling;
 - kernel-tick scheduling;
-- bubble detection or consolidation;
+- automatic bubble detection, kernel-tick, or dynamic consolidation;
 - CUDA Graph splitting;
 - cuBLAS/cuDNN closed-kernel splitting;
 - Transformer workload validation;
@@ -123,7 +126,11 @@ metrics simultaneously.
 
 ![LP throughput under HP contention](docs/assets/readme/lp_throughput_native_vs_hb.png)
 
-## Why `split_blocks=52`?
+## Why split size 52?
+
+Split size denotes the maximum number of CUDA thread blocks assigned to each
+Hummingbird child-kernel launch. It is not a byte count, thread count, child
+count, or SM count.
 
 For the current RTX 5060 Laptop GPU and this CUTLASS kernel:
 
@@ -154,8 +161,165 @@ active_blocks_per_SM = min(6, 5, 2) = 2
 split_blocks = 26 SM * 2 blocks/SM = 52 blocks
 ```
 
-`52` is a fixed, hardware-aware setting for this GPU and this kernel. It is not
-automatic profiling and is not a global optimum for other GPUs or kernels.
+Equivalently, using the Hummingbird-style resource formula:
+
+```text
+N_block = N_SM * occupancy * SM_MAX_THREADS / THREADS_PER_BLOCK
+        = 26 * (1 / 3) * 1536 / 256
+        = 52
+```
+
+The register limit dominates for this kernel, so 52 is a resource-model
+candidate. It is not an untested theoretical optimum; it was validated with a
+unified split-size sweep using the same CUTLASS workload and measurement
+boundaries as the final realtime experiment:
+
+| Configuration | HP P99 | paired-repeat P99 reduction | LP throughput retention |
+|---|---:|---:|---:|
+| Unsplit | `5038.5 us` | - | `100%` |
+| HB_FIXED-32 | `2520.3 us` | `49.40%` | `41.48%` |
+| HB_FIXED-52 | `2487.8 us` | `50.14%` | `57.32%` |
+| HB_FIXED-64 | `2734.6 us` | `45.53%` | `54.81%` |
+| HB_FIXED-128 | `3121.1 us` | `39.32%` | `72.52%` |
+
+P99 reduction is computed per repeat against the paired Unsplit baseline and
+then averaged across repeats. For the current RTX 5060 Laptop GPU and CUTLASS
+FP32 SIMT GEMM workload, split size 52 provides a good trade-off between HP tail
+latency reduction and LP throughput retention. This conclusion is specific to
+this hardware and kernel and is not a global optimum for all GPUs or workloads.
+
+![Split-size latency/throughput trade-off](docs/assets/readme/split_size_tradeoff.png)
+
+## Conservative Bubble-Aware Scheduling MVP
+
+HB-UXSched also includes an
+**Explicit-Hint-Driven Conservative Bubble-Aware Scheduling MVP**. It is built
+on top of:
+
+```text
+UXSched Global HPF
++ Hummingbird HB_FIXED kernel splitting
++ single-child in-flight control
+```
+
+The MVP is disabled by default. When explicitly enabled, it uses a small
+state machine:
+
+| State | Meaning |
+|---|---|
+| `DISABLED` | `UXSCHED_BUBBLE_AWARE=OFF`; original HB_FIXED behavior |
+| `CLOSED` | no valid bubble-open hint; reject new LP child launches |
+| `OPEN` | bubble-open hint received; may launch one LP child if HP is empty |
+| `HP_ACTIVE` | HP request is pending; stop submitting new LP children |
+
+Core rule:
+
+```text
+OPEN + HP queue empty + LP in-flight = 0
+  -> allow one LP child
+
+HP enqueue
+  -> stop submitting new LP children
+
+current LP child
+  -> complete naturally
+
+HP queue empty
+  -> return to CLOSED
+
+fresh bubble-open
+  -> resume the pending split group
+```
+
+The first version enforces:
+
+```text
+max_lp_in_flight = 1
+```
+
+Launch outcomes are explicitly separated:
+
+| Outcome | Meaning |
+|---|---|
+| `kSubmitted` | an HB_FIXED child was submitted |
+| `kDeferredByBubbleGate` | LP was deferred by CLOSED, HP_ACTIVE, no-hint, or fail-safe |
+| `kPassthrough` | the kernel is intentionally Native, such as HP passthrough |
+| `kFailed` | true metadata, PTX, XQueue, unsupported-kernel, or transform failure |
+
+Deferred is not a transform failure and does not allow the original LP kernel to
+bypass the gate through Native. HP Native passthrough is the expected behavior
+for high-priority work and is not counted as fallback.
+
+![Bubble-aware state machine](docs/assets/readme/bubble_aware_state_machine.png)
+
+![HP_ACTIVE timeline](docs/assets/readme/bubble_aware_hp_active_timeline.png)
+
+### Bubble-Aware GPU Smoke Evidence
+
+The latest tracked smoke evidence is in
+[`docs/evidence/bubble_aware_gpu_smoke_20260627_195834/`](docs/evidence/bubble_aware_gpu_smoke_20260627_195834/):
+
+```text
+BUBBLE_AWARE_GPU_SMOKE=PASS
+case_count=5
+error_count=0
+```
+
+| Case | Status | Validation goal |
+|---|---|---|
+| `case_off` | `COMPLETE` | default OFF does not change the original HB_FIXED path |
+| `case_explicit_open` | `COMPLETE` | real LP children launch and complete one by one in OPEN |
+| `case_hp_active` | `COMPLETE` | HP arrival stops new LP child launches and later resumes pending work |
+| `case_no_hint` | `EXPECTED_DEFERRED` | no hint means no LP child and no Native LP fallback |
+| `case_fail_safe` | `EXPECTED_DEFERRED` | abnormal state closes safely with no Native LP fallback |
+
+Key `case_hp_active` checks:
+
+| Metric | Value |
+|---|---:|
+| `correctness_pass` | `1` |
+| `hb_parent_launch_count` | `1` |
+| `hb_child_launch_count` | `6` |
+| `lp_child_launched_in_bubble_count` | `6` |
+| `lp_child_complete_count` | `6` |
+| `max_lp_in_flight` | `1` |
+| `final_lp_in_flight` | `0` |
+| `stop_new_lp_on_hp_count` | `1` |
+| `bubble_reject_hp_pending_count` | `2` |
+| `first_lp_child_before_hp_enqueue` | `1` |
+| `native_lp_launch_count` | `0` |
+| `native_lp_launch_during_hp_window` | `0` |
+| `hp_passthrough_launch_count` | `1` |
+| `hp_hb_transform_count` | `0` |
+| `hb_fallback_count` | `0` |
+| `hb_no_xqueue_count` | `0` |
+| `event_order_pass` | `1` |
+
+Observed event order:
+
+```text
+bubble_open
+  -> LP child 1 launch
+  -> HP enqueue
+  -> child 2 rejected because HP_PENDING
+  -> child 1 completes naturally
+  -> HP Native passthrough
+  -> hp_queue_empty
+  -> fresh bubble_open
+  -> child 2-6 resume and complete
+```
+
+This smoke is a functional validation of the explicit-hint MVP. It is not a
+P99, throughput, or GPU-utilization result. The MVP does not yet implement
+automatic bubble detection, CUDA/NCCL pattern inference, kernel-tick pacing,
+multi-child pre-submission, or dynamic consolidation. The split-size 52
+performance result above should not be attributed to this bubble-aware MVP.
+
+Detailed links:
+
+- [Bubble-aware MVP design](docs/bubble_aware_mvp.md)
+- [GPU smoke evidence](docs/evidence/bubble_aware_gpu_smoke_20260627_195834/)
+- [Integration status](hb_integration_status.md)
 
 ## Repository Layout
 
